@@ -1,5 +1,18 @@
 # Changelog
 
+## Server Forge 0.9.2
+
+Palworld mod manager for servers.
+
+**New**
+- **Mods tab for Palworld servers**, using Palworld's own mod loader. Switch mods on, then add them:
+  - Drop a mod **.zip** (or its unpacked folder).
+  - Use the **CurseForge** or **Nexus Mods** buttons: in the desktop app the site opens in a Server Forge window, and mods downloaded there install on the server by themselves. Nexus "Mod Manager Download" works with your Nexus API key (Settings → Integrations).
+- Each mod shows who it's for (**Server + players**, **Server only** or **Players only**), with its thumbnail, version and author, an On switch and Remove. Palworld sets new mods up, and removes switched-off ones, the next time the server starts; the list says when a change is still waiting for a restart.
+- Older mods that are only **.pak** files are converted for the mod loader automatically. Paks built for the server ("WindowsServer" in the name) are used on the server; the others are for players. Older UE4SS script mods without an Info.json are refused, with an explanation.
+- Switching a mod off really removes it on the next start (taking it off Palworld's active list alone leaves its files in place, where they still load), and mod folders are named the way the loader needs (a number, like a Workshop ID; Palworld silently skips folders with any other name).
+- Palworld share links now list the server's mods for players. SF Mod Manager doesn't install them yet (that's coming in its next update); until then it shows the join details as before.
+
 ## Server Forge 0.9.1
 
 **New**

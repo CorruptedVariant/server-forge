@@ -1,4 +1,4 @@
-// What a share link (thmods://…) gives the SF Mod Manager, per game. Valheim and modded Minecraft Java are
+// What a share link (thmods://…) gives the SF Mod Manager, per game. Valheim, modded Minecraft Java and Palworld are
 // synced by the app; Satisfactory mods are installed with Satisfactory Mod Manager (the app links each one); the other
 // games download what they need by themselves when a player joins, so the link only carries how to join.
 
@@ -8,6 +8,7 @@ import type { GameModule, ServerRecord } from './games/types.ts';
 import { shareManifest as valheimManifest, shareSummary as valheimSummary } from './games/valheim-addons.ts';
 import { contentKind, listContent, sharedMods, sharedModFile } from './games/java-content.ts';
 import { serverMods as satisfactoryMods } from './games/satisfactory.ts';
+import { palSharedMods, palShareSummary, palSharedZip } from './games/palworld-mods.ts';
 
 interface Shareable {
   record: ServerRecord;
@@ -43,7 +44,7 @@ function joinNote(record: ServerRecord): string {
     case 'factorio':
       return "Factorio downloads this server's mods by itself when you join (Multiplayer → Connect to address). Your game must be on the same version.";
     case 'palworld':
-      return 'Join from the title screen: Join Multiplayer Game, then enter the address at the bottom.';
+      return 'Join from the title screen: Join Multiplayer Game, then enter the address at the bottom (and the password if there is one).';
     case 'enshrouded':
       return 'Play → Join → search for the server by name (or add it to your Steam favourites with this address).';
     case 'sevendays':
@@ -79,6 +80,10 @@ export function shareManifest(inst: Shareable) {
       mods: satisfactoryMods(record.installDir).map((m) => ({ id: m.id, name: m.name, version: m.version, url: m.url })),
     };
   }
+  if (record.game === 'palworld') {
+    // Mods for players' games, kept matched by the app (Palworld's own mod loader sets them up when the game starts).
+    return { ...base, mode: 'sync' as const, loader: null, loaderVersion: null, mods: palSharedMods(record) };
+  }
   return { ...base, mode: 'info' as const };
 }
 
@@ -95,6 +100,7 @@ function join(inst: Shareable) {
 export function shareSummary(inst: Shareable) {
   const { record } = inst;
   if (record.game === 'valheim') return { ...valheimSummary(record), mode: 'sync' };
+  if (record.game === 'palworld') return { mode: 'sync', palworld: true, ...palShareSummary(record) };
   const m = shareManifest(inst);
   if (record.game === 'java' && m.mode === 'sync') {
     const all = listContent(record);
@@ -111,7 +117,11 @@ export function shareSummary(inst: Shareable) {
 }
 
 /** A file players may download through the link, or null. Valheim's uploads are handled in main.ts. */
-export function sharedFile(inst: Shareable, name: string): { file: string; type: string } | null {
+export async function sharedFile(inst: Shareable, name: string): Promise<{ file: string; type: string } | null> {
+  if (inst.record.game === 'palworld') {
+    const zip = await palSharedZip(inst.record, name);
+    return zip ? { file: zip, type: 'application/zip' } : null;
+  }
   if (inst.record.game === 'java' && /^[\w.\-+ ]+\.jar$/.test(name)) {
     const file = sharedModFile(inst.record, name);
     return file && existsSync(file) ? { file, type: 'application/java-archive' } : null;

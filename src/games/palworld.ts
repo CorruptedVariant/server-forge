@@ -9,6 +9,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import type { GameModule, LogParser, LogState, ServerRecord, Settings } from './types.ts';
 import { STEAM_APPS, num, decimal, bool, text, newPassword, steamInstall } from './steam-games.ts';
+import { palworldAddons } from './palworld-mods.ts';
 
 const EXE = path.join('Pal', 'Binaries', 'Win64', 'PalServer-Win64-Shipping-Cmd.exe');
 const SETTINGS = path.join('Pal', 'Saved', 'Config', 'WindowsServer', 'PalWorldSettings.ini');
@@ -305,6 +306,8 @@ export const palworld: GameModule = {
   connection: (record) => ({ port: Number(record.settings.port) || 8211, protocol: 'UDP', maxPlayers: Number(record.settings.maxPlayers) || null }),
 
   backup: { sources: (record) => ({ base: path.join(record.installDir, 'Pal', 'Saved'), include: ['SaveGames', 'Config'], world: 'SaveGames' }) },
+
+  addons: palworldAddons,
 
   install: (record, job) => steamInstall(record, job, STEAM_APPS.palworld, EXE, 'Palworld'),
 };

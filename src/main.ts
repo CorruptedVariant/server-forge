@@ -8,7 +8,7 @@ import { installVcRedist } from './vcredist.ts';
 import { curseforgeKey, setCurseforgeKey, searchProjects, latestFile, newestFile } from './curseforge.ts';
 import { linkPacks, unlinkPack, getUpdateSettings, setUpdateSettings } from './games/bedrock-addons.ts';
 import { listProxyServers, addProxyServer, removeProxyServer, setDefaultProxyServer, proxyName, prepareBackend } from './games/bungee-network.ts';
-import { downloadNexus, nexusPackage } from './nexus.ts';
+import { downloadNexus, nexusPackage, NEXUS_GAMES } from './nexus.ts';
 import { nexusKey, nexusUser, setNexusKey, NEXUS_APP } from './nexus-key.ts';
 import { factorioStatus, setFactorioLogin, importFactorioLogin } from './factorio-key.ts';
 import { getDiscord, setDiscord, testDiscord, startDiscordNotifications, NOTIFY_EVENTS } from './discord.ts';
@@ -1295,9 +1295,9 @@ route('GET', '/api/share/:token', async (ctx) => {
 route('GET', '/api/share/:token/file/:name', async (ctx) => {
   const inst = serverForToken(ctx.params[0]);
   const name = ctx.params[1];
-  // Other games (Minecraft Java mods): only enabled mods players need.
+  // Other games (Minecraft Java and Palworld mods): only enabled mods players need.
   if (inst.record.game !== 'valheim') {
-    const f = sharedFile(inst, name);
+    const f = await sharedFile(inst, name);
     if (!f) throw new HttpError(404, 'That file is not shared.');
     ctx.res.writeHead(200, { 'Content-Type': f.type, 'Content-Length': statSync(f.file).size, 'Cache-Control': 'no-store' });
     await new Promise<void>((resolve) => createReadStream(f.file).on('error', () => resolve()).on('end', resolve).pipe(ctx.res));
@@ -1677,12 +1677,12 @@ route('PUT', '/api/servers/:id/addons/update-settings', async (ctx) => {
   return next;
 });
 
-// Valheim: install a Nexus Mods file. Body: {"input": "nxm://valheim/mods/…" | "https://www.nexusmods.com/valheim/mods/…"}.
+// Valheim and Palworld: install a Nexus Mods file. Body: {"input": "nxm://valheim/mods/…" | "https://www.nexusmods.com/valheim/mods/…"}.
 // Needs the Nexus API key (Settings → Integrations); a mod page address needs a Premium account.
 route('POST', '/api/servers/:id/addons/nexus', async (ctx) => {
   const p = needServer(ctx, 'addons.manage', ctx.params[0]);
   const { inst, addons } = addonsOf(ctx.params[0], true);
-  if (inst.record.game !== 'valheim') throw new HttpError(400, 'Nexus Mods downloads are for Valheim servers.');
+  if (!NEXUS_GAMES[inst.record.game]) throw new HttpError(400, 'Nexus Mods downloads are for Valheim and Palworld servers.');
   const key = nexusKey();
   if (!key) throw new HttpError(400, 'Add your Nexus Mods API key first (Settings → Integrations).');
   const { input } = await readBody(ctx.req);
@@ -1692,7 +1692,7 @@ route('POST', '/api/servers/:id/addons/nexus', async (ctx) => {
     const local = path.join(dir, 'mod.zip');
     let info;
     try {
-      info = await downloadNexus(String(input ?? ''), local, key, NEXUS_APP, (l) => inst.log(l));
+      info = await downloadNexus(String(input ?? ''), local, key, NEXUS_APP, (l) => inst.log(l), inst.record.game);
     } catch (err) {
       throw new HttpError(400, (err as Error).message);
     }
