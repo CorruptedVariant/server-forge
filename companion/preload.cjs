@@ -22,6 +22,14 @@ if (location.protocol === 'file:') contextBridge.exposeInMainWorld('modsync', {
   mcOpenFolder: (raw) => call('mc-open-folder', String(raw)),
   /** Palworld: opens the folder the game reads mods from right now. */
   palOpenFolder: () => call('pal-open-folder'),
+  /** Starts Palworld through Steam. */
+  palLaunch: () => call('pal-launch'),
+  /** Palworld: the player's own mods. Each add answers { done, warnings }. */
+  palInstallFile: (file) => call('pal-install-file', webUtils.getPathForFile(file)),
+  palPickFiles: () => call('pal-pick-files'),
+  palToggle: (id, on) => call('pal-toggle', String(id), !!on),
+  palRemove: (id) => call('pal-remove', String(id)),
+  palBrowse: (site) => call('pal-browse', site === 'nexus' ? 'nexus' : 'curseforge'),
   /** Opens an allowed outside link (mod pages, loader installers, smmanager://). */
   openExternal: (url) => call('open-external', String(url)),
   /** Installs clean changes plus the ones approved (list of "Author-Mod@version"). */

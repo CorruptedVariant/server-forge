@@ -18,25 +18,11 @@ import type { AddonSupport, ServerRecord } from './types.ts';
 import { defenderScan } from '../modscan.ts';
 import { unzipTo, zipFolder } from '../backups.ts';
 import { dataPath } from '../store.ts';
+import { filesIn, findPackages, infoProblem, isUe4ssDep, palSide, readInfo, UE4SS_URL, wrapLegacyPaks, wrapLuaMods, wrapUe4ss, type PalInfo } from '../modsync/palworld-pkg.ts';
 
-const TYPES = ['Paks', 'Lua', 'LogicMods', 'UE4SS', 'PalSchema'] as const;
-const PACKAGE = /^[A-Za-z0-9_-]{1,64}$/;
+export { findPackages, palSide, readInfo, wrapLegacyPaks, wrapLuaMods, wrapUe4ss };
+export type { PalInfo, PalRule } from '../modsync/palworld-pkg.ts';
 
-export interface PalRule {
-  Type: string;
-  IsServer?: boolean;
-  Targets?: string[];
-}
-export interface PalInfo {
-  ModName?: string;
-  PackageName: string;
-  Version?: string;
-  Author?: string;
-  Thumbnail?: string;
-  Dependencies?: string[];
-  Tags?: string[];
-  InstallRule: PalRule[];
-}
 interface PalMod {
   folder: string;
   dir: string;
@@ -48,44 +34,6 @@ const workshopDir = (record: ServerRecord) => path.join(modsRoot(record), 'Works
 const settingsFile = (record: ServerRecord) => path.join(modsRoot(record), 'PalModSettings.ini');
 
 // ---------- Info.json ----------
-
-/** Reads an Info.json, tolerating a BOM, comments and trailing commas (hand-written ones have them). */
-export function readInfo(dir: string): PalInfo | null {
-  const file = path.join(dir, 'Info.json');
-  if (!existsSync(file)) return null;
-  const text = readFileSync(file, 'utf-8').replace(/^﻿/, '');
-  let data: unknown;
-  try {
-    data = JSON.parse(text);
-  } catch {
-    try {
-      data = JSON.parse(text.replace(/^\s*\/\/.*$/gm, '').replace(/,(\s*[}\]])/g, '$1'));
-    } catch {
-      return null;
-    }
-  }
-  const d = data as Partial<PalInfo>;
-  if (!d || typeof d.PackageName !== 'string' || !Array.isArray(d.InstallRule)) return null;
-  return d as PalInfo;
-}
-
-/** Problems that would make Palworld skip the mod (or write outside its folders), or null. */
-function infoProblem(info: PalInfo): string | null {
-  if (!PACKAGE.test(info.PackageName)) return `its PackageName "${String(info.PackageName).slice(0, 80)}" isn't a valid package name`;
-  if (!info.InstallRule.length) return 'its Info.json has no InstallRule';
-  for (const r of info.InstallRule) {
-    if (!TYPES.includes(r?.Type as (typeof TYPES)[number])) return `its InstallRule has an unknown type "${String(r?.Type).slice(0, 40)}"`;
-    for (const t of r.Targets ?? []) if (/(^|[\\/])\.\.([\\/]|$)/.test(String(t)) || path.isAbsolute(String(t))) return 'its InstallRule points outside the mod folder';
-  }
-  return null;
-}
-
-/** Who uses the mod: the server (rules with IsServer), players' games (the other rules), or both. */
-export function palSide(info: PalInfo): 'both' | 'server' | 'players' {
-  const server = info.InstallRule.some((r) => r.IsServer === true);
-  const players = info.InstallRule.some((r) => r.IsServer !== true);
-  return server && players ? 'both' : server ? 'server' : 'players';
-}
 
 const SIDE_TEXT = { both: 'Server + players', server: 'Server only', players: 'Players only' };
 
@@ -172,146 +120,6 @@ export function workshopFolder(pkg: string, from?: string): string {
 
 // ---------- installing ----------
 
-/** Folders (up to 6 levels down) that hold an Info.json; their own subfolders aren't searched. */
-export function findPackages(root: string): string[] {
-  const out: string[] = [];
-  const walk = (dir: string, depth: number) => {
-    if (existsSync(path.join(dir, 'Info.json'))) return void out.push(dir);
-    if (depth >= 6) return;
-    for (const e of readdirSync(dir, { withFileTypes: true })) if (e.isDirectory()) walk(path.join(dir, e.name), depth + 1);
-  };
-  walk(root, 0);
-  return out;
-}
-
-function filesIn(root: string): string[] {
-  const out: string[] = [];
-  const walk = (dir: string) => {
-    for (const e of readdirSync(dir, { withFileTypes: true })) {
-      const p = path.join(dir, e.name);
-      if (e.isDirectory()) walk(p);
-      else out.push(p);
-    }
-  };
-  walk(root);
-  return out;
-}
-
-/**
- * An older mod that's only .pak files (for Pal\Content\Paks\~mods or LogicMods): wraps it as a loader package with an
- * Info.json. The dedicated server needs paks built for it ("…WindowsServer…" in the name, like the loader's own server
- * mods ship them); other paks are built for the game, so they're only for players. Returns the package folder, or null
- * if it isn't one.
- */
-export function wrapLegacyPaks(root: string, name: string, work: string): string | null {
-  const files = filesIn(root);
-  const paks = files.filter((f) => /\.(pak|ucas|utoc)$/i.test(f));
-  if (!paks.some((f) => /\.pak$/i.test(f))) return null;
-  const logic = paks.some((f) => /[\\/]LogicMods[\\/]/i.test(f));
-  const type = logic ? 'LogicMods' : 'Paks';
-  const pkg = name.replace(/\.(zip|pak)$/i, '').replace(/-\d+(-[\d-]+)?$/, '').replace(/[^A-Za-z0-9]+/g, '').slice(0, 60) || 'PakMod';
-  const dir = path.join(work, 'wrapped', pkg);
-  const server = paks.filter((f) => /WindowsServer/i.test(path.basename(f)));
-  const client = paks.filter((f) => !/WindowsServer|LinuxServer/i.test(path.basename(f)));
-  const rules: PalRule[] = [];
-  for (const [sub, list, isServer] of [['Client', client, false], ['Server', server, true]] as const) {
-    if (!list.some((f) => /\.pak$/i.test(f))) continue;
-    mkdirSync(path.join(dir, sub), { recursive: true });
-    for (const f of list) cpSync(f, path.join(dir, sub, path.basename(f)));
-    rules.push({ Type: type, ...(isServer ? { IsServer: true } : {}), Targets: [`./${sub}`] });
-  }
-  if (!rules.length) return null;
-  const info: PalInfo & { ConvertedBy: string } = {
-    ModName: name.replace(/\.(zip|pak)$/i, '').replace(/-\d+(-[\d-]+)?$/, ''),
-    PackageName: pkg,
-    Version: '1.0.0',
-    Author: 'unknown',
-    InstallRule: rules,
-    ConvertedBy: 'Server Forge (from an older .pak mod)',
-  };
-  writeFileSync(path.join(dir, 'Info.json'), JSON.stringify(info, null, 2));
-  return dir;
-}
-
-/** The name Lua mods list UE4SS under in their Dependencies. */
-const UE4SS_PACKAGE = 'UE4SSExperimentalPW';
-const UE4SS_URL = 'https://github.com/Okaetsu/RE-UE4SS/releases/tag/experimental-palworld';
-const isUe4ssDep = (dep: unknown) => /^ue4ss/i.test(String(dep));
-
-/** Changes with the files' contents: Palworld only reinstalls a mod when its Version changes. */
-function contentVersion(dir: string): string {
-  const h = createHash('sha1');
-  for (const f of filesIn(dir).sort()) {
-    h.update(path.relative(dir, f));
-    h.update(readFileSync(f));
-  }
-  return `1.0.${parseInt(h.digest('hex').slice(0, 6), 16)}`;
-}
-
-/**
- * A plain UE4SS download (UE4SS.dll, usually in a ue4ss folder beside dwmapi.dll): wraps it as a server package. The
- * server loads UE4SS.dll from Mods\NativeMods\UE4SS itself, so dwmapi.dll is left out (with it, UE4SS would load twice
- * and crash). A rule's target keeps its own name there, so the targets are the files themselves, not a folder around
- * them. Players aren't sent it: it clashes with their own copy (Workshop or manual).
- */
-export function wrapUe4ss(root: string, work: string): string | null {
-  const dll = filesIn(root).find((f) => path.basename(f).toLowerCase() === 'ue4ss.dll');
-  if (!dll) return null;
-  const from = path.dirname(dll);
-  const dir = path.join(work, 'wrapped', UE4SS_PACKAGE);
-  mkdirSync(dir, { recursive: true });
-  const entries = readdirSync(from).filter((e) => e.toLowerCase() !== 'dwmapi.dll');
-  for (const e of entries) cpSync(path.join(from, e), path.join(dir, e), { recursive: true });
-  const info: PalInfo & { ConvertedBy: string } = {
-    ModName: 'UE4SS',
-    PackageName: UE4SS_PACKAGE,
-    Version: contentVersion(dir),
-    Author: 'UE4SS team',
-    InstallRule: [{ Type: 'UE4SS', IsServer: true, Targets: entries.map((e) => `./${e}`) }],
-    ConvertedBy: 'Server Forge (from a UE4SS download)',
-  };
-  writeFileSync(path.join(dir, 'Info.json'), JSON.stringify(info, null, 2));
-  return dir;
-}
-
-/**
- * Older UE4SS script mods (a folder with Scripts\main.lua or dlls\main.dll, no Info.json): wraps each as a package.
- * Nothing says whether such a mod does its work on the server or in the game, so it goes to both. UE4SS turns it on from
- * the mods.txt Palworld writes; enabled.txt would load it a second time, so it's left out.
- */
-export function wrapLuaMods(root: string, name: string, work: string): string[] {
-  const homes = new Set<string>();
-  for (const f of filesIn(root)) {
-    const m = /^(.*)[\\/](?:scripts[\\/]main\.lua|dlls[\\/]main\.dll)$/i.exec(f);
-    if (m) homes.add(m[1]);
-  }
-  const out: string[] = [];
-  for (const home of homes) {
-    const label = home === root ? name.replace(/\.(zip|pak)$/i, '').replace(/-\d+(-[\d-]+)?$/, '') : path.basename(home);
-    const pkg = label.replace(/[^A-Za-z0-9_-]+/g, '').slice(0, 60) || 'LuaMod';
-    const dir = path.join(work, 'wrapped', pkg);
-    mkdirSync(dir, { recursive: true });
-    const entries = readdirSync(home).filter((e) => e.toLowerCase() !== 'enabled.txt');
-    for (const e of entries) cpSync(path.join(home, e), path.join(dir, e), { recursive: true });
-    const targets = entries.map((e) => `./${e}`);
-    const info: PalInfo & { ConvertedBy: string } = {
-      ModName: label,
-      PackageName: pkg,
-      Version: contentVersion(dir),
-      Author: 'unknown',
-      Dependencies: [UE4SS_PACKAGE],
-      InstallRule: [
-        { Type: 'Lua', Targets: targets },
-        { Type: 'Lua', IsServer: true, Targets: targets },
-      ],
-      ConvertedBy: 'Server Forge (from an older UE4SS mod)',
-    };
-    writeFileSync(path.join(dir, 'Info.json'), JSON.stringify(info, null, 2));
-    out.push(dir);
-  }
-  return out;
-}
-
 /** Unpacks (or copies) what was dropped and returns the mod folders in it, with the work folder to delete afterwards. */
 export async function unpackMods(file: string): Promise<{ work: string; dirs: string[]; wrapped: boolean }> {
   const work = path.join(os.tmpdir(), `sf-palmod-${randomUUID().slice(0, 8)}`);
@@ -365,12 +173,19 @@ export function modStamp(dir: string): string {
   return h.digest('hex').slice(0, 16);
 }
 
-/** Active mods players need (any rule that isn't server-only), for the share link. */
+/** Active mods players need (any rule that isn't server-only). UE4SS only goes along when a shared mod depends on it. */
+function playerMods(all: PalMod[], active: string[]): PalMod[] {
+  const isUe4ss = (m: PalMod) => m.info.InstallRule.some((r) => r.Type === 'UE4SS');
+  const mods = all.filter((m) => active.includes(m.info.PackageName) && palSide(m.info) !== 'server');
+  const needed = mods.some((m) => !isUe4ss(m) && (m.info.Dependencies ?? []).some(isUe4ssDep));
+  return mods.filter((m) => needed || !isUe4ss(m));
+}
+
+/** The mods for the share link. */
 export function palSharedMods(record: ServerRecord) {
   const s = readModSettings(settingsFile(record));
   if (!s.enabled) return [];
-  return installed(record)
-    .filter((m) => s.active.includes(m.info.PackageName) && palSide(m.info) !== 'server')
+  return playerMods(installed(record), s.active)
     .map((m) => ({ id: m.info.PackageName, name: m.info.ModName || m.info.PackageName, version: String(m.info.Version ?? ''), file: `${m.info.PackageName}.zip`, stamp: modStamp(m.dir) }));
 }
 
@@ -380,7 +195,7 @@ export function palShareSummary(record: ServerRecord) {
   const all = installed(record);
   const active = (m: PalMod) => s.active.includes(m.info.PackageName);
   return {
-    shared: s.enabled ? all.filter((m) => active(m) && palSide(m.info) !== 'server').length : 0,
+    shared: s.enabled ? playerMods(all, s.active).length : 0,
     serverOnly: all.filter((m) => active(m) && palSide(m.info) === 'server').map((m) => m.info.ModName || m.info.PackageName),
     off: all.filter((m) => !active(m) || !s.enabled).map((m) => m.info.ModName || m.info.PackageName),
     loaderOff: !s.enabled,
@@ -470,9 +285,9 @@ export const palworldAddons: AddonSupport = {
         const ue4ssDep = deps.some(isUe4ssDep);
         const missing = deps.filter((d) => !isUe4ssDep(d) && !have.has(d));
         if (missing.length) warnings.push({ level: 'error', text: `Needs ${missing.join(', ')}, which ${missing.length === 1 ? "isn't" : "aren't"} installed.` });
-        // A players-only mod runs in the players' games, so it's their UE4SS that matters, not the server's.
-        if (ue4ssDep && side === 'players') warnings.push({ level: 'warn', text: 'Needs UE4SS in each player\'s game: "UE4SS Experimental (Palworld)" on the Steam Workshop.' });
-        else if (ue4ssDep && !hasUe4ss) warnings.push({ level: 'error', text: `Needs UE4SS on the server, which isn't installed. Download UE4SS-Palworld.zip from ${UE4SS_URL} and drop it here.` });
+        // A players-only mod runs in the players' games, which get UE4SS through the share link once it's installed here.
+        if (ue4ssDep && side === 'players' && !hasUe4ss) warnings.push({ level: 'warn', text: `Players need UE4SS for this. Download UE4SS-Palworld.zip from ${UE4SS_URL} and drop it here: players get it through the share link.` });
+        else if (ue4ssDep && side !== 'players' && !hasUe4ss) warnings.push({ level: 'error', text: `Needs UE4SS on the server, which isn't installed. Download UE4SS-Palworld.zip from ${UE4SS_URL} and drop it here.` });
         if (manualUe4ss && info.InstallRule.some((r) => r.Type === 'UE4SS' && r.IsServer === true)) {
           warnings.push({ level: 'error', text: 'Pal\\Binaries\\Win64 also has a dwmapi.dll from a manual UE4SS install. Delete it: two copies of UE4SS crash the server.' });
         }
@@ -527,7 +342,7 @@ export const palworldAddons: AddonSupport = {
         // UE4SS packaged only for players' games still works here: the server loads it the same way.
         const ue4ssRules = info.InstallRule.filter((r) => r.Type === 'UE4SS');
         if (ue4ssRules.length && !info.InstallRule.some((r) => r.IsServer === true)) {
-          for (const r of ue4ssRules) r.IsServer = true;
+          info.InstallRule.push(...ue4ssRules.map((r) => ({ ...r, IsServer: true })));
           writeFileSync(path.join(dest, 'Info.json'), JSON.stringify(info, null, 2));
         }
         setActive(record, info.PackageName, true);
@@ -546,14 +361,14 @@ export const palworldAddons: AddonSupport = {
         const missing = deps.filter((d) => !isUe4ssDep(d) && !have.has(d));
         if (missing.length) result.warnings.push(`${name} needs ${missing.join(', ')}. Install ${missing.length === 1 ? 'it' : 'them'} too.`);
         if (deps.some(isUe4ssDep)) {
-          if (palSide(info) === 'players') result.warnings.push(`${name} needs UE4SS in each player's game: "UE4SS Experimental (Palworld)" on the Steam Workshop.`);
-          else if (!hasUe4ss) result.warnings.push(`${name} needs UE4SS on the server. Download UE4SS-Palworld.zip from ${UE4SS_URL} and drop it here too.`);
+          if (palSide(info) === 'players' && !hasUe4ss) result.warnings.push(`Players need UE4SS for ${name}. Download UE4SS-Palworld.zip from ${UE4SS_URL} and drop it here: players get it through the share link.`);
+          else if (palSide(info) !== 'players' && !hasUe4ss) result.warnings.push(`${name} needs UE4SS on the server. Download UE4SS-Palworld.zip from ${UE4SS_URL} and drop it here too.`);
         }
       }
       if (wrapped) {
         const kinds = dirs.map((d) => readInfo(d)?.InstallRule[0]?.Type);
-        if (kinds.includes('UE4SS')) result.warnings.push("Server Forge packaged UE4SS for this server's mod loader, without dwmapi.dll (the server loads it directly). Players need their own copy for mods that use it.");
-        if (kinds.includes('Lua')) result.warnings.push('That was a UE4SS script mod without an Info.json, so Server Forge wrote one. It runs on the server and reaches players through the share link. Players also need UE4SS in their own game.');
+        if (kinds.includes('UE4SS')) result.warnings.push("Server Forge packaged UE4SS for Palworld's mod loader, without dwmapi.dll (the game and server load it directly). Players get it through the share link when a shared mod needs it.");
+        if (kinds.includes('Lua')) result.warnings.push('That was a UE4SS script mod without an Info.json, so Server Forge wrote one. It runs on the server and reaches players through the share link.');
         if (kinds.includes('Paks') || kinds.includes('LogicMods')) {
           result.warnings.push(
             "That was an older .pak mod without an Info.json, so Server Forge wrote one. Paks built for the server (\"WindowsServer\" in the name) are used on the server; the others are for players' games and reach players through the share link.",

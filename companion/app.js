@@ -417,21 +417,18 @@ function renderPalworld() {
   game.innerHTML = '';
   box.innerHTML = '';
   const list = st.links.filter((l) => l.game === 'palworld');
-  if (!list.length) return box.append(el('p', 'muted small', 'No Palworld servers yet. Add one with its link above.'));
   const pw = st.palworld;
+  renderPalMods(pw);
+  if (!list.length) box.append(el('p', 'muted small', 'No Palworld servers yet. Add one with its link above.'));
   const setup = el('div', 'setup-box');
   if (!pw) setup.append(el('div', 'warn small', "Palworld wasn't found. Install it with Steam, then come back to this tab."));
   else {
     setup.append(el('div', 'muted small', `Palworld: ${pw.gameDir}`));
     setup.append(el('div', 'muted small', `Mods go to ${pw.root}${pw.steamWorkshop ? " (the game reads Steam Workshop's folder because you've subscribed to Workshop mods; the server's mods go there too)" : ''}.`));
-    if (pw.running) setup.append(el('div', 'warn small', 'Palworld is running. Close it to sync: it sets mods up when it starts.'));
+    if (pw.running) setup.append(el('div', 'warn small', 'Palworld is running. Close it to add, change or sync mods: it sets them up when it starts.'));
+    if (pw.manualUe4ss) setup.append(el('div', 'warn small', "You have a manual UE4SS install (dwmapi.dll in Pal\\Binaries\\Win64). It doesn't read the mod loader's mods, so the server's script mods won't run. To use them, rename or delete dwmapi.dll, then Sync now."));
     const missing = pw.installed.filter((m) => !m.present || !m.active);
     if (pw.installed.length && (missing.length || !pw.loaderOn)) setup.append(el('div', 'warn small', 'Some server mods were switched off or removed in the game. Sync now puts them back.'));
-    const row = el('div', 'row tight');
-    const open = el('button', 'small ghost', 'Open mods folder');
-    open.addEventListener('click', () => api.palOpenFolder());
-    row.append(open);
-    setup.append(row);
   }
   game.append(setup);
   for (const l of list) {
@@ -458,6 +455,55 @@ function renderPalworld() {
     b.append(addressRow(l));
     if (l.note) b.append(el('div', 'muted small', l.note));
     box.append(b);
+  }
+}
+
+/** Every mod in the game: on/off and remove for the player's own, labels for what a server or Steam looks after. */
+function renderPalMods(pw) {
+  const box = $('palMods');
+  box.innerHTML = '';
+  for (const id of ['btnPalCurseForge', 'btnPalNexus', 'btnPalAdd', 'btnPalFolder']) $(id).disabled = !pw;
+  $('btnPalPlay').disabled = !pw || pw.running;
+  $('btnPalPlay').title = !pw ? "Palworld wasn't found" : pw.running ? 'Palworld is already running' : 'Syncs with your servers, then starts Palworld';
+  if (!pw) return;
+  if (!pw.mods.length) return box.append(el('p', 'muted small', 'No mods yet.'));
+  const change = async (fn) => {
+    try {
+      await fn();
+    } catch (err) {
+      toast(err.message, true);
+    }
+    refresh();
+  };
+  for (const m of pw.mods) {
+    const row = el('div', 'mod');
+    const info = el('div');
+    const name = el('div', null, `${m.name}${m.version ? ` ${m.version}` : ''}`);
+    name.append(document.createTextNode(' '), el('span', 'pill', m.source === 'server' ? 'from a server' : m.source === 'workshop' ? 'Steam Workshop' : 'yours'));
+    info.append(name, el('div', 'muted small', [m.types.join(', '), m.author && m.author !== 'unknown' ? `by ${m.author}` : '', m.pending].filter(Boolean).join(' · ')));
+    if (m.needsUe4ss) info.append(el('div', 'warn small', 'Needs UE4SS: add UE4SS-Palworld.zip here, or subscribe to "UE4SS Experimental (Palworld)" on the Steam Workshop.'));
+    if (m.serverOnly) info.append(el('div', 'warn small', "Made for servers only: your game doesn't use it."));
+    row.append(info);
+    const actions = el('div', 'row tight');
+    if (m.source === 'server') actions.append(el('span', 'muted small', m.active ? 'kept matched to the server' : 'off: Sync now puts it back'));
+    else {
+      const label = el('label', 'toggle');
+      const on = el('input');
+      on.type = 'checkbox';
+      on.checked = m.active;
+      on.addEventListener('change', () => change(() => api.palToggle(m.id, on.checked)));
+      label.append(on, document.createTextNode(' On'));
+      actions.append(label);
+      if (m.source === 'own') {
+        const rm = el('button', 'small danger', 'Remove');
+        rm.addEventListener('click', async () => {
+          if (await confirmBox(`Remove ${m.name}?`)) change(() => api.palRemove(m.id));
+        });
+        actions.append(rm);
+      }
+    }
+    row.append(actions);
+    box.append(row);
   }
 }
 
@@ -1013,6 +1059,49 @@ for (const evt of ['dragleave', 'drop']) $('drop').addEventListener(evt, () => $
 $('drop').addEventListener('drop', (e) => {
   e.preventDefault();
   installFiles([...e.dataTransfer.files]);
+});
+
+/** Runs one Palworld add and reports it. */
+async function palAdded(run, label) {
+  try {
+    const r = await run();
+    r.done.forEach(log);
+    r.warnings.forEach((w) => log(`⚠ ${w}`));
+    if (r.done.length) toast(r.warnings[0] ?? `${label}`, !!r.warnings.length);
+  } catch (err) {
+    toast(err.message, true);
+  }
+  refresh();
+}
+// Like Valheim's Play: match the servers first (with the review if anything changed), then start the game.
+$('btnPalPlay').addEventListener('click', () =>
+  busy($('btnPalPlay'), 'Checking…', async () => {
+    try {
+      if (!st?.links.some((l) => l.game === 'palworld' && l.palworld)) return await api.palLaunch();
+      // A server that's down shouldn't stop the game starting.
+      const r = await api.prepare('palworld').catch((err) => {
+        log(`Couldn't check your Palworld servers (${err.message}). Starting anyway.`);
+        return { changes: 0 };
+      });
+      if (!r.changes) return await api.palLaunch();
+      afterReview = () => api.palLaunch();
+      showReview(r.review, 'palworld');
+    } catch (err) {
+      toast(err.message, true);
+    } finally {
+      refresh();
+    }
+  }),
+);
+$('btnPalCurseForge').addEventListener('click', () => api.palBrowse('curseforge'));
+$('btnPalNexus').addEventListener('click', () => api.palBrowse('nexus'));
+$('btnPalFolder').addEventListener('click', () => api.palOpenFolder());
+$('btnPalAdd').addEventListener('click', () => palAdded(() => api.palPickFiles(), 'Mods added'));
+for (const evt of ['dragenter', 'dragover']) $('palDrop').addEventListener(evt, (e) => (e.preventDefault(), $('palDrop').classList.add('over')));
+for (const evt of ['dragleave', 'drop']) $('palDrop').addEventListener(evt, () => $('palDrop').classList.remove('over'));
+$('palDrop').addEventListener('drop', async (e) => {
+  e.preventDefault();
+  for (const f of [...e.dataTransfer.files]) await palAdded(() => api.palInstallFile(f), `Added ${f.name}`);
 });
 
 api.on('log', log);

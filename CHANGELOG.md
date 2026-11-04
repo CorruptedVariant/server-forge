@@ -1,5 +1,13 @@
 # Changelog
 
+## Server Forge 0.9.4
+
+Palworld players get UE4SS through the share link.
+
+**Changed**
+- A Palworld server's share link now includes **UE4SS** whenever a shared mod needs it, so players can get it with a sync (SF Mod Manager 0.6.2 or newer). If no shared mod needs it, players aren't sent it. UE4SS now shows as **Server + players** on the Mods tab. UE4SS already on a server doesn't need adding again.
+- Mods that need UE4SS now point you to adding it on the Mods tab, with the download link.
+
 ## Server Forge 0.9.3
 
 UE4SS and Lua mods on Palworld servers.

@@ -304,8 +304,11 @@ async function state() {
     running: valheimRunning(),
     // Palworld: where the game is, and the mods this app installed there for servers.
     palworld: (() => {
-      const pdir = linksFor('palworld').length ? palDir() : null;
-      return pdir ? { gameDir: pdir, running: palworldRunning(), ...pal.palStatus(pdir) } : null;
+      const pdir = palDir();
+      if (!pdir) return null;
+      const running = palworldRunning();
+      if (!running) pal.palFollowRoot(pdir);
+      return { gameDir: pdir, running, ...pal.palStatus(pdir) };
     })(),
     links,
     mods: dir ? sync.installedMods(dir, firstLink) : [],
@@ -564,6 +567,40 @@ handle('install-file', async (file) => {
   if (!dir) throw new Error("Valheim wasn't found.");
   return installZip(dir, file, 'upload');
 });
+/** The Palworld folder, for changes to its mods: the game reads its mod settings as it starts. */
+function palForChange() {
+  const dir = palDir();
+  if (!dir) throw new Error("Palworld wasn't found. Install it with Steam, then try again.");
+  if (palworldRunning()) throw new Error('Close Palworld first: it sets mods up when it starts.');
+  return dir;
+}
+const palInstall = async (file) => {
+  const r = await pal.installOwnPal(palForChange(), file, os.tmpdir(), log);
+  r.warnings.forEach((w) => log(`⚠ ${w}`));
+  return r;
+};
+handle('pal-launch', async () => {
+  if (!palDir()) throw new Error("Palworld wasn't found. Install it with Steam, then try again.");
+  if (palworldRunning()) throw new Error('Palworld is already running.');
+  log('Starting Palworld…');
+  await shell.openExternal(`steam://rungameid/${pal.PALWORLD_APP_ID}`);
+});
+handle('pal-install-file', async (file) => palInstall(String(file)));
+handle('pal-pick-files', async () => {
+  const r = await dialog.showOpenDialog(win, { title: 'Add Palworld mods', filters: [{ name: 'Palworld mods', extensions: ['zip', 'pak'] }], properties: ['openFile', 'multiSelections'] });
+  const out = { done: [], warnings: [] };
+  for (const f of r.canceled ? [] : r.filePaths) {
+    const one = await palInstall(f);
+    out.done.push(...one.done);
+    out.warnings.push(...one.warnings);
+  }
+  return out;
+});
+handle('pal-toggle', async (id, on) => pal.setPalEnabled(palForChange(), String(id), !!on));
+handle('pal-remove', async (id) => pal.removeOwnPal(palForChange(), String(id)));
+handle('pal-browse', async (site) =>
+  site === 'nexus' ? openBrowser('https://www.nexusmods.com/games/palworld/mods', 'Nexus Mods', 'palworld') : openBrowser('https://www.curseforge.com/palworld', 'CurseForge', 'palworld'),
+);
 handle('browse', async () => openBrowser('https://thunderstore.io/c/valheim/', 'Thunderstore'));
 handle('browse-nexus', async () => openBrowser('https://www.nexusmods.com/games/valheim/mods', 'Nexus Mods'));
 handle('browse-hexium', async () => openBrowser(vm.HEXIUM, 'Hexium'));
@@ -903,20 +940,40 @@ async function handleNxm(url) {
     const { response } = await dialog.showMessageBox(target, {
       type: 'question',
       title: 'Install this mod?',
-      message: 'Install this Nexus Mods file into Valheim?',
+      message: `Install this Nexus Mods file into ${/^nxm:\/\/palworld\//i.test(url) ? 'Palworld' : 'Valheim'}?`,
       detail: 'It will be safety-checked first. Only install mods from sources you trust.',
       buttons: ['Cancel', 'Install'],
       defaultId: 1,
       cancelId: 0,
     });
     if (response !== 1) throw new Error('Not installed (cancelled).');
+    if (/^nxm:\/\/palworld\//i.test(url)) {
+      palForChange();
+      const folder = path.join(os.tmpdir(), `thnexus-${Date.now()}`);
+      mkdirSync(folder, { recursive: true });
+      const tmp = path.join(folder, 'download.zip');
+      try {
+        const info = await nexus.downloadNexus(url, tmp, nexusKey(), NEXUS_APP, log, 'palworld');
+        // A .pak-only mod is named after its file.
+        const named = path.join(folder, info.fileName.replace(/[^\w.\- ]/g, '_'));
+        cpSync(tmp, named);
+        const r = await palInstall(named);
+        send('installed', { filename: info.modName, done: [...r.done, ...r.warnings.map((w) => `⚠ ${w}`)] });
+      } finally {
+        rmSync(folder, { recursive: true, force: true });
+      }
+      return;
+    }
     send('installed', { filename: 'Nexus Mods download', done: await installFromNexus(url) });
   } catch (err) {
     send('installed', { filename: 'Nexus Mods download', error: err.message });
   }
 }
 
-function openBrowser(url, site) {
+/** The game the mod browser window is installing downloads into. */
+let browserGame = 'valheim';
+function openBrowser(url, site, game = 'valheim') {
+  browserGame = game;
   if (browser && !browser.isDestroyed()) {
     browser.setTitle(`${site} – SF Mod Manager`);
     browser.loadURL(url);
@@ -967,13 +1024,29 @@ function openBrowser(url, site) {
       send('installed', { filename, error: 'Only .zip mods can be installed. Download it in your normal browser, repack it as a .zip and drop that here.' });
       return;
     }
-    if (!/\.zip$/i.test(filename)) return;
+    if (!(browserGame === 'palworld' ? /\.(zip|pak)$/i : /\.zip$/i).test(filename)) return;
     const tmp = path.join(os.tmpdir(), `thsync-${Date.now()}-${filename.replace(/[^\w.\- ]/g, '_')}`);
     item.setSavePath(tmp);
     log(`Downloading ${filename}…`);
     item.once('done', async (_ev, st) => {
       try {
         if (st !== 'completed') throw new Error(`Download ${st}.`);
+        if (browserGame === 'palworld') {
+          palForChange();
+          const { response } = await dialog.showMessageBox(browser && !browser.isDestroyed() ? browser : win, {
+            type: 'question',
+            title: 'Install this mod?',
+            message: `Install ${filename} into Palworld?`,
+            detail: 'It will be safety-checked first. Only install mods from sources you trust.',
+            buttons: ['Cancel', 'Install'],
+            defaultId: 1,
+            cancelId: 0,
+          });
+          if (response !== 1) throw new Error('Not installed (cancelled).');
+          const r = await palInstall(tmp);
+          send('installed', { filename, done: [...r.done, ...r.warnings.map((w) => `⚠ ${w}`)] });
+          return;
+        }
         const dir = gameDir();
         if (!dir) throw new Error("Valheim wasn't found.");
         if (valheimRunning()) throw new Error('Close Valheim first.');

@@ -83,11 +83,26 @@
   <div class="view" id="view-palworld" hidden>
     <section class="card">
       <div class="head">
+        <h3>Palworld mods</h3>
+        <div class="row tight">
+          <button class="small primary" id="btnPalPlay">▶ Play now</button>
+          <button class="small" id="btnPalCurseForge">Browse CurseForge</button>
+          <button class="small" id="btnPalNexus">Browse Nexus Mods</button>
+          <button class="small" id="btnPalAdd">Add a mod file</button>
+          <button class="small ghost" id="btnPalFolder">Open mods folder</button>
+        </div>
+      </div>
+      <p class="muted small">Every mod in your game. Add your own here: mods made for Palworld's mod loader, older .pak mods and UE4SS script mods all work. Palworld sets mods up when it starts, so make changes while it's closed.</p>
+      <div id="palGame"></div>
+      <div class="drop" id="palDrop">Drop Palworld mod .zip or .pak files, or a mod folder, here</div>
+      <div id="palMods"></div>
+    </section>
+    <section class="card">
+      <div class="head">
         <h3>Palworld servers</h3>
         <button class="small primary" id="btnPalSync">⟳ Sync now</button>
       </div>
-      <p class="muted small">The app installs each server's mods for players' games through Palworld's own mod loader, and keeps them matched: added, updated and removed with the server. Your own mods (from the Steam Workshop or elsewhere) are left alone. Palworld sets mods up when it starts, so sync while it's closed.</p>
-      <div id="palGame"></div>
+      <p class="muted small">The app installs each server's mods for players' games through Palworld's own mod loader, and keeps them matched: added, updated and removed with the server. Your own mods are left alone. Palworld sets mods up when it starts, so sync while it's closed.</p>
       <div id="palLinks"></div>
     </section>
   </div>
