@@ -1,5 +1,19 @@
 # Changelog
 
+## SF Mod Manager 0.6.2
+
+A full Palworld mod manager, with Play now.
+
+**New**
+- **Palworld mods.** The Palworld tab now lists every mod in your game and works without following a server. Add your own by dropping a **.zip**, **.pak** or mod folder, or with **Add a mod file**. Mods made for Palworld's mod loader, older .pak mods, older UE4SS script mods and UE4SS itself all work.
+- **Browse CurseForge** and **Browse Nexus Mods** open in a window, and mods you download there install after you confirm. Nexus "Mod Manager Download" works with your Nexus API key.
+- Your own mods have **On/off** and **Remove**. Each mod is labelled **yours**, **from a server** or **Steam Workshop**.
+- **▶ Play now** syncs with your servers, then starts Palworld through Steam. If a server can't be reached, the game starts anyway.
+- **UE4SS through sync.** When a server's mods need UE4SS and the server shares it (Server Forge 0.9.4), Sync installs it for you. It's skipped if you already have your own copy, because two copies crash the game.
+
+**Changed**
+- The tab warns when a mod needs UE4SS and you don't have it, when a mod is made for servers only, and when a manual UE4SS install (dwmapi.dll) won't run mods from the mod loader.
+
 ## Server Forge 0.9.4
 
 Palworld players get UE4SS through the share link.

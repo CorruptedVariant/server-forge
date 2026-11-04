@@ -7,7 +7,7 @@
   "extraMetadata": {
     "name": "tavern-client-mod-manager",
     "productName": "SF Mod Manager",
-    "version": "0.6.1",
+    "version": "0.6.2",
     "main": "companion/main.js"
   },
   "files": [
