@@ -19,6 +19,7 @@
     <div class="brand"><img src="icon.png" alt=""> SF <span>Mod Manager</span></div>
   </div>
   <div class="top-right">
+    <button type="button" class="small settings-btn" id="btnSettings" title="Settings and updates">⚙ Settings<span class="update-dot" id="settingsDot" hidden title="An update is available"></span></button>
     <div class="theme-corner">
       <button type="button" class="small appearance-button" id="appAppearance" aria-pressed="false" title="Switch to Fancy UI">
         <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5L12 3ZM20 2v4M18 4h4"/></svg>
@@ -63,6 +64,7 @@
     <span class="sv-bar-brand" title="SF Mod Manager"><img src="icon.png" alt=""> SF Mod Manager</span>
     <button type="button" data-game="valheim">Valheim</button>
     <button type="button" data-game="java">Minecraft Java</button>
+    <button type="button" data-game="palworld">Palworld</button>
     <button type="button" data-game="starvalor" title="Star Valor mods, managed by Achilles"><img class="tab-icon" src="achilles/public/img/favicon.png" alt="">Star Valor</button>
     <button type="button" data-game="other">Other servers</button>
   </nav>
@@ -75,6 +77,18 @@
       </div>
       <p class="muted small">Each modded server gets its own profile in the Minecraft Launcher, with its own folder, so its mods never mix with your other worlds. Mods follow the server: added, updated and removed with it. Jars you add to that folder yourself are left alone. Servers without mods just need the normal launcher (their address is shown here).</p>
       <div id="mcLinks"></div>
+    </section>
+  </div>
+
+  <div class="view" id="view-palworld" hidden>
+    <section class="card">
+      <div class="head">
+        <h3>Palworld servers</h3>
+        <button class="small primary" id="btnPalSync">⟳ Sync now</button>
+      </div>
+      <p class="muted small">The app installs each server's mods for players' games through Palworld's own mod loader, and keeps them matched: added, updated and removed with the server. Your own mods (from the Steam Workshop or elsewhere) are left alone. Palworld sets mods up when it starts, so sync while it's closed.</p>
+      <div id="palGame"></div>
+      <div id="palLinks"></div>
     </section>
   </div>
 
@@ -169,8 +183,7 @@
   <p><span class="beta-badge">Beta</span> This app is actively being worked on and updates are frequent. If something goes wrong, please report it.</p>
   <p class="muted small" id="aboutUpdate"></p>
   <div class="row tight wrap">
-    <button class="small" id="btnCheckAppUpdate">Check for updates</button>
-    <button class="small ghost" id="btnUpdateApp">Update from a file…</button>
+    <button class="small" id="btnAboutUpdates">Updates…</button>
     <a class="small button-like" id="aboutReport" href="https://github.com/Volatile111/server-forge/issues/new/choose" target="_blank" rel="noopener">Report a problem</a>
     <a class="small button-like" href="https://github.com/Volatile111/sf-mod-manager-releases/releases" target="_blank" rel="noopener">What's new</a>
     <a class="small button-like" href="https://github.com/Volatile111/server-forge/releases/latest" target="_blank" rel="noopener">Get Server Forge</a>
@@ -179,6 +192,22 @@
     you may use, change and share it, and the <a href="https://github.com/Volatile111/server-forge/tree/main/companion" target="_blank" rel="noopener">source code</a> is public. It comes with no warranty.
     Not affiliated with Iron Gate, Mojang/Microsoft, Coffee Stain, Re-Logic, Keen Software House, Thunderstore, Modrinth, Hexium or Nexus Mods.</p>
   <div class="row review-actions"><span class="spacer"></span><button id="aboutClose">Close</button></div>
+</dialog>
+<dialog id="settingsDialog" class="about settings">
+  <h2>⚙ Settings</h2>
+  <section class="settings-section">
+    <h3>Update SF Mod Manager</h3>
+    <div id="appUpdateInfo"><p class="muted small">Checking for updates…</p></div>
+    <div class="row tight wrap">
+      <button class="small primary" id="btnSettingsInstall" hidden>Install update</button>
+      <button class="small" id="btnCheckAppUpdate">Check for updates</button>
+      <button class="small ghost" id="btnUpdateApp">Update from a file…</button>
+    </div>
+    <p class="muted small">New versions come from <a href="https://github.com/Volatile111/sf-mod-manager-releases/releases" target="_blank" rel="noopener">GitHub releases</a> and are checked when the app starts and every 6 hours.
+      Installing closes the app, shows an "Updating" window and opens the new version by itself. Your mods, links and settings are kept.
+      "Update from a file" installs an installer you already have (any version, including going back).</p>
+  </section>
+  <div class="row review-actions"><span class="spacer"></span><button id="settingsClose">Close</button></div>
 </dialog>
 <dialog id="confirmDialog" class="confirm">
   <form id="confirmForm">

@@ -14,6 +14,7 @@ const root = path.join(here, '..');
 const lib = (p) => import(pathToFileURL(path.join(root, 'dist', p)).href);
 const sync = await lib('modsync/sync.js');
 const mc = await lib('modsync/minecraft.js');
+const pal = await lib('modsync/palworld.js');
 const vm = await lib('valheim-mods.js');
 const scan = await lib('modscan.js');
 const nexus = await lib('nexus.js');
@@ -165,6 +166,27 @@ async function setNexusKey(key) {
   return user;
 }
 
+/** Palworld's game folder (found through Steam, remembered once found). */
+function palDir() {
+  if (settings.palworldDir && pal.isPalworldFolder(settings.palworldDir)) return settings.palworldDir;
+  const found = pal.findPalworld();
+  if (found) {
+    settings.palworldDir = found;
+    saveSettings(settings);
+  }
+  return found;
+}
+
+/** Palworld sets mods up when it starts and reads its mod settings then: change them only while it's closed. */
+function palworldRunning() {
+  try {
+    // CSV: the table form cuts names longer than 25 characters ("Palworld-Win64-Shipping.e").
+    return /Palworld-Win64-Shipping\.exe/i.test(execFileSync('tasklist', ['/FI', 'IMAGENAME eq Palworld-Win64-Shipping.exe', '/NH', '/FO', 'CSV'], { encoding: 'utf-8', windowsHide: true }));
+  } catch {
+    return false;
+  }
+}
+
 function valheimRunning() {
   try {
     return /valheim\.exe/i.test(execFileSync('tasklist', ['/FI', 'IMAGENAME eq valheim.exe', '/NH'], { encoding: 'utf-8', windowsHide: true }));
@@ -252,6 +274,11 @@ async function linkStatus(entry) {
       };
     }
     if (game === 'satisfactory') return { ...base, mods: checkSatisfactory(any) };
+    if (game === 'palworld' && any.mode === 'sync') {
+      const manifest = pal.checkPalManifest(any);
+      const dir = palDir();
+      return { ...base, palworld: { mods: manifest.mods.map((m) => ({ id: m.id, name: m.name, version: m.version })) }, plan: dir ? pal.planPal(dir, manifest, link) : null };
+    }
     return base;
   } catch (err) {
     return { raw: entry.raw, server: entry.server ?? null, game, ok: false, error: err.message, checkedAt: Date.now() };
@@ -275,6 +302,11 @@ async function state() {
     nexus: settings.nexusKey ? (settings.nexusUser ?? { name: 'linked', premium: false }) : null,
     autoSync: settings.autoSync,
     running: valheimRunning(),
+    // Palworld: where the game is, and the mods this app installed there for servers.
+    palworld: (() => {
+      const pdir = linksFor('palworld').length ? palDir() : null;
+      return pdir ? { gameDir: pdir, running: palworldRunning(), ...pal.palStatus(pdir) } : null;
+    })(),
     links,
     mods: dir ? sync.installedMods(dir, firstLink) : [],
     loose: dir ? vm.looseMods(dir) : [],
@@ -321,15 +353,26 @@ async function prepareAll(game = 'valheim') {
     }
     saveSettings(settings);
   }
+  if (game === 'palworld' || game === null) {
+    const pdir = linksFor('palworld').length ? palDir() : null;
+    if (game === 'palworld' && !pdir) throw new Error("Palworld wasn't found. Install it with Steam (or start it once), then try again.");
+    for (const entry of pdir ? linksFor('palworld') : []) {
+      const link = sync.parseLink(entry.raw);
+      log(`Checking ${entry.server ?? link.host}…`);
+      const any = await sync.fetchAnyManifest(link);
+      if (any.mode !== 'sync') continue; // a Server Forge from before 0.9.2 shares no Palworld mods
+      pending.push(await pal.preparePal(pdir, pal.checkPalManifest(any), link, work, log));
+    }
+  }
   return pending;
 }
 
-const canAuto = (p, approved) => (p.kind === 'java' ? mc.canAutoApplyJava(p, approved) : sync.canAutoApply(p, approved));
+const canAuto = (p, approved) => (p.kind === 'java' ? mc.canAutoApplyJava(p, approved) : p.kind === 'palworld' ? pal.canAutoApplyPal(p, approved) : sync.canAutoApply(p, approved));
 
 /** What the review screen shows. */
 function reviewOf(list) {
   const approved = approvedSet();
-  return list.map((p) => p.kind === 'java' ? {
+  return list.map((p) => p.kind === 'java' || p.kind === 'palworld' ? {
     server: p.manifest.server,
     bepinex: null,
     changes: p.changes.map((c) => ({
@@ -339,7 +382,7 @@ function reviewOf(list) {
       version: c.mod.version,
       from: c.from,
       action: c.action,
-      source: c.modrinth ? 'modrinth' : 'server',
+      source: p.kind === 'palworld' ? 'palserver' : c.modrinth ? 'modrinth' : 'server',
       scan: c.scan,
       needsApproval: c.needsApproval,
       blocked: c.blocked,
@@ -377,7 +420,8 @@ const hasChanges = (list) => list.some((p) => p.bepinex || p.changes.length || p
 /** Installs the pending changes: clean ones, remembered approvals and the ones approved now. */
 async function applyPending(approveNow = []) {
   const dir = gameDir();
-  if (pending.some((p) => p.kind !== 'java') && valheimRunning()) throw new Error('Close Valheim first: its mod files are locked while it runs.');
+  if (pending.some((p) => p.kind !== 'java' && p.kind !== 'palworld') && valheimRunning()) throw new Error('Close Valheim first: its mod files are locked while it runs.');
+  if (pending.some((p) => p.kind === 'palworld') && palworldRunning()) throw new Error('Close Palworld first: it sets mods up when it starts.');
   settings.approved = [...new Set([...(settings.approved ?? []), ...approveNow])];
   saveSettings(settings);
   const approved = approvedSet();
@@ -388,6 +432,11 @@ async function applyPending(approveNow = []) {
         const r = await mc.applyJava(p, approved, log);
         summary.push(`${p.manifest.server}: ${r.installed.length} installed, ${r.removed.length} removed${r.skipped.length ? `, skipped ${r.skipped.join(', ')}` : ''}`);
         if (r.setup && !r.setup.loaderReady) summary.push(`${p.manifest.server}: ${mc.loaderName(p.manifest.loader)} isn't in the Minecraft Launcher yet: run its installer once (see the Minecraft tab).`);
+        continue;
+      }
+      if (p.kind === 'palworld') {
+        const r = await pal.applyPal(p, approved, log);
+        summary.push(`${p.manifest.server}: ${r.installed.length} installed, ${r.removed.length} removed${r.skipped.length ? `, skipped ${r.skipped.join(', ')}` : ''}. Palworld applies the changes the next time it starts.`);
         continue;
       }
       const r = await sync.applyPrepared(dir, p, approved, log);
@@ -434,7 +483,7 @@ handle('remove-link', async (raw) => {
 });
 // Sync now: download + check, then the page shows the review (or reports nothing to do).
 handle('prepare', async (game) => {
-  const list = await prepareAll(game === 'java' ? 'java' : 'valheim');
+  const list = await prepareAll(game === 'java' || game === 'palworld' ? game : 'valheim');
   return { review: reviewOf(list), changes: hasChanges(list), auto: list.every((p) => canAuto(p, approvedSet())) };
 });
 // Minecraft: set the launcher up again (after running the Forge/NeoForge installer, or if the profile was deleted).
@@ -447,6 +496,13 @@ handle('mc-setup', async (raw) => {
   entry.folder ??= mc.folderName(any.server, link);
   saveSettings(settings);
   return mc.setupLauncher(entry.folder, manifest, joinAddress(link, any), log);
+});
+handle('pal-open-folder', async () => {
+  const pdir = palDir();
+  if (!pdir) return;
+  const dir = pal.modRoot(pdir);
+  mkdirSync(dir, { recursive: true });
+  await shell.openPath(dir);
 });
 handle('mc-open-folder', async (raw) => {
   const entry = linksFor('java').find((l) => l.raw === raw);
@@ -956,9 +1012,11 @@ setInterval(async () => {
     // Valheim: nothing changes behind the player's back while they're playing vanilla, or while the game runs.
     const valheim = gameDir() && activeProfile() !== VANILLA && !valheimRunning() && st.links.some((l) => l.game === 'valheim' && changed(l));
     const java = st.links.some((l) => l.game === 'java' && changed(l));
-    if (!valheim && !java) return;
+    // Palworld: only while the game is closed (it reads its mod settings when it starts).
+    const palworld = st.palworld && !st.palworld.running && st.links.some((l) => l.game === 'palworld' && (changed(l) || l.plan?.needsFix));
+    if (!valheim && !java && !palworld) return;
     if (!settings.autoSync) return send('state-changed');
-    for (const game of [valheim && 'valheim', java && 'java'].filter(Boolean)) {
+    for (const game of [valheim && 'valheim', java && 'java', palworld && 'palworld'].filter(Boolean)) {
       const list = await prepareAll(game);
       if (list.every((p) => canAuto(p, approvedSet()))) send('auto-synced', await applyPending());
       else {

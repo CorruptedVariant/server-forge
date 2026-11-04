@@ -16,10 +16,12 @@ if (location.protocol === 'file:') contextBridge.exposeInMainWorld('modsync', {
   addLink: (raw) => call('add-link', String(raw)),
   removeLink: (raw) => call('remove-link', String(raw)),
   /** Downloads and safety-checks every change; returns what the review screen shows. Installs nothing. */
-  prepare: (game) => call('prepare', game === 'java' ? 'java' : 'valheim'),
+  prepare: (game) => call('prepare', game === 'java' || game === 'palworld' ? game : 'valheim'),
   /** Minecraft: sets up the launcher for a followed server (loader, profile, server list); returns its status. */
   mcSetup: (raw) => call('mc-setup', String(raw)),
   mcOpenFolder: (raw) => call('mc-open-folder', String(raw)),
+  /** Palworld: opens the folder the game reads mods from right now. */
+  palOpenFolder: () => call('pal-open-folder'),
   /** Opens an allowed outside link (mod pages, loader installers, smmanager://). */
   openExternal: (url) => call('open-external', String(url)),
   /** Installs clean changes plus the ones approved (list of "Author-Mod@version"). */

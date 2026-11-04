@@ -135,6 +135,19 @@ dialog.about::backdrop { background: rgba(0, 0, 0, .6); }
 dialog.about h2 { margin: 0 0 8px; font-family: Georgia, serif; color: var(--accent); display: flex; align-items: center; gap: 10px; font-size: 19px; }
 dialog.about h2 img { width: 28px; height: 28px; }
 dialog.about .beta-badge { margin-left: 0; }
+/* Settings (header button and dialog) */
+.settings-btn { position: relative; display: inline-flex; align-items: center; gap: 5px; min-height: 28px; padding: 4px 10px; font-size: 12px; }
+.update-dot { position: absolute; top: -3px; right: -3px; width: 9px; height: 9px; border-radius: 50%; background: #4ade80; border: 2px solid var(--bg); }
+.update-dot[hidden] { display: none; }
+dialog.settings h3 { margin: 4px 0 6px; font-size: 14px; }
+dialog.settings .settings-section { border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px; margin-bottom: 12px; }
+dialog.settings .settings-section p { margin: 6px 0; }
+dialog.settings .settings-section .row { margin: 10px 0 4px; }
+dialog.settings .ok-text { color: #4ade80; font-weight: 600; }
+dialog.settings .warn-text { color: #fbbf24; }
+.update-notes { margin: 6px 0; font-size: 12.5px; }
+.update-notes summary { cursor: pointer; color: var(--accent); }
+.update-notes .notes-text { white-space: pre-line; max-height: 220px; overflow-y: auto; margin-top: 6px; padding: 8px 10px; border-radius: 8px; background: color-mix(in srgb, var(--text) 5%, transparent); color: var(--muted); line-height: 1.45; }
 dialog.confirm { width: min(480px, calc(100vw - 40px)); background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 14px; padding: 18px 20px; }
 dialog.confirm::backdrop { background: rgba(0, 0, 0, .6); }
 dialog.confirm p { margin: 0 0 12px; white-space: pre-line; line-height: 1.45; }

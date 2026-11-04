@@ -1,5 +1,14 @@
 # Changelog
 
+## SF Mod Manager 0.6.1
+
+Palworld server mods for players, and a Settings window for updates.
+
+**New**
+- **Palworld tab.** Paste a Palworld server's share link and SF Mod Manager installs that server's mods for your game through Palworld's own mod loader, and keeps them matched: added, updated and removed with the server. Use **Sync now** while Palworld is closed, because the game sets mods up when it starts.
+- Your own Palworld mods, from the Steam Workshop or elsewhere, are left alone. Only mods the app installed itself are ever removed.
+- **⚙ Settings button** at the top right, with an **Update SF Mod Manager** section: your version, the newest version, when it last checked, what's new, and **Install update**, **Check for updates** and **Update from a file…**. The button shows a green dot when an update is out. **About & help** now has an **Updates…** button that opens it.
+
 ## Server Forge 0.9.2
 
 Palworld mod manager for servers.

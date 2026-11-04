@@ -245,6 +245,7 @@ function render() {
     mods.append(row);
   }
   renderJava();
+  renderPalworld();
   renderOther();
   renderTabs();
 }
@@ -252,8 +253,8 @@ function render() {
 // ---------- games ----------
 
 // Games without their own tab: the app only shows how to join (Satisfactory: and which mods to get with SMM).
-const OTHER_GAMES = ['satisfactory', 'bedrock', 'terraria', 'spaceengineers', 'factorio', 'palworld', 'enshrouded', 'sevendays', 'zomboid', 'vrising'];
-const TABS = ['valheim', 'java', 'starvalor', 'other'];
+const OTHER_GAMES = ['satisfactory', 'bedrock', 'terraria', 'spaceengineers', 'factorio', 'enshrouded', 'sevendays', 'zomboid', 'vrising'];
+const TABS = ['valheim', 'java', 'palworld', 'starvalor', 'other'];
 const tabOf = (game) => (OTHER_GAMES.includes(game) ? 'other' : game);
 let currentTab = (() => {
   try {
@@ -405,6 +406,57 @@ function renderJava() {
     open.addEventListener('click', () => api.mcOpenFolder(l.raw));
     actions.append(open);
     b.append(actions);
+    box.append(b);
+  }
+}
+
+/** Palworld: the game's mod loader, then each server with what's left to sync. */
+function renderPalworld() {
+  const game = $('palGame');
+  const box = $('palLinks');
+  game.innerHTML = '';
+  box.innerHTML = '';
+  const list = st.links.filter((l) => l.game === 'palworld');
+  if (!list.length) return box.append(el('p', 'muted small', 'No Palworld servers yet. Add one with its link above.'));
+  const pw = st.palworld;
+  const setup = el('div', 'setup-box');
+  if (!pw) setup.append(el('div', 'warn small', "Palworld wasn't found. Install it with Steam, then come back to this tab."));
+  else {
+    setup.append(el('div', 'muted small', `Palworld: ${pw.gameDir}`));
+    setup.append(el('div', 'muted small', `Mods go to ${pw.root}${pw.steamWorkshop ? " (the game reads Steam Workshop's folder because you've subscribed to Workshop mods; the server's mods go there too)" : ''}.`));
+    if (pw.running) setup.append(el('div', 'warn small', 'Palworld is running. Close it to sync: it sets mods up when it starts.'));
+    const missing = pw.installed.filter((m) => !m.present || !m.active);
+    if (pw.installed.length && (missing.length || !pw.loaderOn)) setup.append(el('div', 'warn small', 'Some server mods were switched off or removed in the game. Sync now puts them back.'));
+    const row = el('div', 'row tight');
+    const open = el('button', 'small ghost', 'Open mods folder');
+    open.addEventListener('click', () => api.palOpenFolder());
+    row.append(open);
+    setup.append(row);
+  }
+  game.append(setup);
+  for (const l of list) {
+    if (!l.ok || !l.palworld) {
+      const b = linkBox(l, l.ok ? el('span', 'pill ok', 'no mods needed') : null);
+      if (l.ok) {
+        b.append(addressRow(l));
+        if (l.note) b.append(el('div', 'muted small', l.note));
+      }
+      box.append(b);
+      continue;
+    }
+    const p = l.plan;
+    const changes = p ? p.add.length + p.update.length + p.remove.length : 0;
+    const todo = p && (changes || p.needsFix);
+    const b = linkBox(l, el('span', `pill ${todo ? 'todo' : 'ok'}`, !p ? 'Palworld not found' : changes ? `${changes} change${changes === 1 ? '' : 's'} to sync` : p.needsFix ? 'needs a sync' : '✔ matched'));
+    const mods = l.palworld.mods;
+    const details = [];
+    for (const m of p?.add ?? []) details.push(`+ ${m.name} ${m.version}`);
+    for (const m of p?.update ?? []) details.push(`↑ ${m.name} ${m.from} → ${m.version}`);
+    for (const id of p?.remove ?? []) details.push(`− ${id}`);
+    b.append(el('div', 'muted small', `${mods.length} mod${mods.length === 1 ? '' : 's'} for players${details.length ? ` · ${details.join(' · ')}` : ''}`));
+    if (mods.length) b.append(el('div', 'muted small', mods.map((m) => `${m.name}${m.version ? ` ${m.version}` : ''}`).join(' · ')));
+    b.append(addressRow(l));
+    if (l.note) b.append(el('div', 'muted small', l.note));
     box.append(b);
   }
 }
@@ -591,14 +643,36 @@ async function checkAppUpdate(force = false) {
   $('updateBanner').hidden = !u.available;
   $('updateText').textContent = u.available ? `SF Mod Manager ${u.latest} is available (you have ${u.current}).` : '';
   $('btnInstallAppUpdate').hidden = !u.canInstall;
-  $('aboutUpdate').textContent = u.available
+  $('settingsDot').hidden = !u.available;
+  const status = u.available
     ? `Version ${u.latest} is available.`
     : u.error
       ? `Couldn't check for updates: ${u.error}`
       : u.latest
         ? `You have the latest version.`
         : 'No releases have been published yet.';
+  $('aboutUpdate').textContent = status;
+  renderUpdateSettings(status);
   if (force && !u.available && !u.error) toast('You have the latest version');
+}
+
+/** Settings → Update SF Mod Manager: this version, the newest one and what's new in it. */
+function renderUpdateSettings(status) {
+  const u = appUpdate;
+  const box = $('appUpdateInfo');
+  box.innerHTML = '';
+  if (!u) return box.append(el('p', 'muted small', 'Checking for updates…'));
+  box.append(el('p', null, `You have version ${u.current}.`));
+  box.append(el('p', u.available ? 'ok-text' : u.error ? 'warn-text small' : 'muted small', status));
+  if (u.checkedAt) box.append(el('p', 'muted small', `Last checked ${new Date(u.checkedAt).toLocaleString()}.`));
+  if (u.available && u.notes) {
+    const notes = el('details', 'update-notes');
+    notes.append(el('summary', null, `What's new in ${u.latest}`), el('div', 'notes-text', u.notes));
+    box.append(notes);
+  }
+  if (u.available && !u.canInstall) box.append(el('p', 'muted small', 'Updates install only in the installed app (this copy runs from the source files).'));
+  $('btnSettingsInstall').hidden = !(u.available && u.canInstall);
+  $('btnSettingsInstall').textContent = `Install ${u.latest ?? 'update'}`;
 }
 checkAppUpdate();
 setInterval(() => checkAppUpdate(), 6 * 3600_000);
@@ -609,24 +683,39 @@ $('updateNotes').addEventListener('click', (e) => {
   else window.open(appUpdate?.url ?? 'https://github.com/Volatile111/sf-mod-manager-releases/releases');
 });
 
+// The banner's "Update now" and Settings' "Install" do the same thing; both show the download progress.
+const installButtons = () => [$('btnInstallAppUpdate'), $('btnSettingsInstall')];
 api.on('update-progress', (p) => {
   const mb = (n) => (n / 1048576).toFixed(1);
-  $('btnInstallAppUpdate').textContent = p.total ? `Downloading ${mb(p.received)} / ${mb(p.total)} MB…` : `Downloading ${mb(p.received)} MB…`;
+  for (const b of installButtons()) b.textContent = p.total ? `Downloading ${mb(p.received)} / ${mb(p.total)} MB…` : `Downloading ${mb(p.received)} MB…`;
 });
 
-$('btnInstallAppUpdate').addEventListener('click', async () => {
+async function installAppUpdate() {
   if (!appUpdate?.available) return;
   if (!await confirmBox(`Update to ${appUpdate.latest}?\n\nIt downloads from GitHub, then the app closes, an "Updating" window shows the progress, and the new version opens by itself. Your mods and settings are kept.`)) return;
-  const btn = $('btnInstallAppUpdate');
-  btn.disabled = true;
+  for (const b of installButtons()) b.disabled = true;
   try {
     await api.installAppUpdate();
-    btn.textContent = 'Installing…';
+    for (const b of installButtons()) b.textContent = 'Installing…';
   } catch (err) {
-    btn.disabled = false;
-    btn.textContent = 'Update now';
+    for (const b of installButtons()) b.disabled = false;
+    $('btnInstallAppUpdate').textContent = 'Update now';
+    $('btnSettingsInstall').textContent = `Install ${appUpdate.latest}`;
     toast(err.message, true);
   }
+}
+$('btnInstallAppUpdate').addEventListener('click', installAppUpdate);
+$('btnSettingsInstall').addEventListener('click', installAppUpdate);
+
+function openSettings() {
+  renderUpdateSettings($('aboutUpdate').textContent);
+  $('settingsDialog').showModal();
+}
+$('btnSettings').addEventListener('click', openSettings);
+$('settingsClose').addEventListener('click', () => $('settingsDialog').close());
+$('btnAboutUpdates').addEventListener('click', () => {
+  $('aboutDialog').close();
+  openSettings();
 });
 
 $('btnAbout').addEventListener('click', (e) => {
@@ -732,7 +821,9 @@ function showReview(review, game = 'valheim') {
   $('reviewIntro').textContent =
     game === 'java'
       ? "Every mod was downloaded from the server and checked (Windows Defender, and whether Modrinth has the exact same file). Nothing has been installed yet."
-      : 'Every mod was downloaded and safety-checked (Windows Defender, Thunderstore status and a scan for malware-like behaviour). Nothing has been installed yet.';
+      : game === 'palworld'
+        ? 'Every mod was downloaded from the server and checked with Windows Defender. Nothing has been installed yet. Palworld sets the mods up the next time it starts.'
+        : 'Every mod was downloaded and safety-checked (Windows Defender, Thunderstore status and a scan for malware-like behaviour). Nothing has been installed yet.';
   const body = $('reviewBody');
   body.innerHTML = '';
   let needsTick = 0;
@@ -750,14 +841,16 @@ function showReview(review, game = 'valheim') {
       const badge =
         c.source === 'upload' ? 'not on Thunderstore'
         : c.source === 'server' ? 'not on Modrinth'
+        : c.source === 'palserver' ? 'from the server'
         : c.source === 'modrinth' ? 'on Modrinth'
         : c.source === 'hexium' ? `by ${c.author} · Hexium`
         : `by ${c.author}`;
-      title.append(el('span', `badge ${c.source === 'upload' || c.source === 'server' ? 'own' : ''}`, badge));
+      title.append(el('span', `badge ${c.source === 'upload' || c.source === 'server' || c.source === 'palserver' ? 'own' : ''}`, badge));
       info.append(title, el('div', 'muted small', c.scan.summary));
       for (const f of c.scan.flags) info.append(el('div', `small ${f.level === 'high' ? 'error' : 'warn'}`, `${f.level === 'high' ? '⛔' : '⚠'} ${f.text}${f.file ? ` (${f.file})` : ''}`));
       if (c.source === 'upload' && !c.scan.flags.length) info.append(el('div', 'small warn', '⚠ Uploaded by the server owner, not from Thunderstore: nobody else has checked it.'));
       if (c.source === 'server' && !c.scan.flags.length) info.append(el('div', 'small warn', "⚠ Sent by the server owner, and Modrinth doesn't have this exact file: nobody else has checked it."));
+      if (c.source === 'palserver' && !c.scan.flags.length) info.append(el('div', 'small warn', '⚠ Sent by the server owner: nobody else has checked these files. Only approve mods from servers you trust.'));
       row.append(info);
       const right = el('div', 'change-right');
       right.append(scanBadge(c.scan));
@@ -868,6 +961,26 @@ $('btnMcSync').addEventListener('click', () =>
       }
       afterReview = null;
       showReview(r.review, 'java');
+    } catch (err) {
+      toast(err.message, true);
+    }
+    refresh();
+  }),
+);
+
+// Palworld: the same, for the game's own mod loader.
+$('btnPalSync').addEventListener('click', () =>
+  busy($('btnPalSync'), 'Checking…', async () => {
+    try {
+      if (!st?.links.some((l) => l.game === 'palworld' && l.palworld)) return toast('No Palworld servers with mods to sync');
+      const r = await api.prepare('palworld');
+      if (!r.changes) {
+        log('Your Palworld mods already match the servers.');
+        toast('Already up to date');
+        return;
+      }
+      afterReview = null;
+      showReview(r.review, 'palworld');
     } catch (err) {
       toast(err.message, true);
     }

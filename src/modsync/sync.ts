@@ -15,7 +15,7 @@ export const VALHEIM_APP_ID = 892970;
 
 // ---------- finding Valheim ----------
 
-function steamPath(): string | null {
+export function steamPath(): string | null {
   for (const key of ['HKCU\\Software\\Valve\\Steam', 'HKLM\\SOFTWARE\\WOW6432Node\\Valve\\Steam']) {
     try {
       const out = execFileSync('reg', ['query', key, '/v', key.startsWith('HKCU') ? 'SteamPath' : 'InstallPath'], { encoding: 'utf-8', windowsHide: true });
