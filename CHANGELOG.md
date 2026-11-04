@@ -1,5 +1,20 @@
 # Changelog
 
+## Server Forge 0.9.3
+
+UE4SS and Lua mods on Palworld servers.
+
+**New**
+- **UE4SS on Palworld servers.** Drop `UE4SS-Palworld.zip` on the Mods tab and it's packaged for the server's own mod loader. The server loads it directly, so no manual `dwmapi.dll` is needed. Stop the server first, then start it to set UE4SS up.
+- **Older UE4SS script mods** (with `Scripts\main.lua` and no Info.json) now install too. They run on the server and reach players through the share link. Players need UE4SS in their own game for these.
+
+**Changed**
+- Mods that need UE4SS now say so: with the download link if the server needs it, or pointing to "UE4SS Experimental (Palworld)" on the Steam Workshop if it's the players who need it.
+- The Mods tab warns if a manual `dwmapi.dll` is still in `Pal\Binaries\Win64`, because two copies of UE4SS crash the server.
+
+**Fixed**
+- Server Forge refused UE4SS and older UE4SS script mods, saying Palworld's mod loader couldn't install them (the 0.9.2 notes said this too). It can.
+
 ## SF Mod Manager 0.6.1
 
 Palworld server mods for players, and a Settings window for updates.

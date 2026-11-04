@@ -205,11 +205,6 @@ function filesIn(root: string): string[] {
  */
 export function wrapLegacyPaks(root: string, name: string, work: string): string | null {
   const files = filesIn(root);
-  if (files.some((f) => /\.lua$/i.test(f) || /\.dll$/i.test(f))) {
-    throw new Error(
-      `${name} is an older UE4SS script mod (it has no Info.json). Palworld's mod loader can't install those by itself: look for a version of it made for the new mod loader (its download has an Info.json), on CurseForge, Nexus Mods or the Steam Workshop.`,
-    );
-  }
   const paks = files.filter((f) => /\.(pak|ucas|utoc)$/i.test(f));
   if (!paks.some((f) => /\.pak$/i.test(f))) return null;
   const logic = paks.some((f) => /[\\/]LogicMods[\\/]/i.test(f));
@@ -238,6 +233,85 @@ export function wrapLegacyPaks(root: string, name: string, work: string): string
   return dir;
 }
 
+/** The name Lua mods list UE4SS under in their Dependencies. */
+const UE4SS_PACKAGE = 'UE4SSExperimentalPW';
+const UE4SS_URL = 'https://github.com/Okaetsu/RE-UE4SS/releases/tag/experimental-palworld';
+const isUe4ssDep = (dep: unknown) => /^ue4ss/i.test(String(dep));
+
+/** Changes with the files' contents: Palworld only reinstalls a mod when its Version changes. */
+function contentVersion(dir: string): string {
+  const h = createHash('sha1');
+  for (const f of filesIn(dir).sort()) {
+    h.update(path.relative(dir, f));
+    h.update(readFileSync(f));
+  }
+  return `1.0.${parseInt(h.digest('hex').slice(0, 6), 16)}`;
+}
+
+/**
+ * A plain UE4SS download (UE4SS.dll, usually in a ue4ss folder beside dwmapi.dll): wraps it as a server package. The
+ * server loads UE4SS.dll from Mods\NativeMods\UE4SS itself, so dwmapi.dll is left out (with it, UE4SS would load twice
+ * and crash). A rule's target keeps its own name there, so the targets are the files themselves, not a folder around
+ * them. Players aren't sent it: it clashes with their own copy (Workshop or manual).
+ */
+export function wrapUe4ss(root: string, work: string): string | null {
+  const dll = filesIn(root).find((f) => path.basename(f).toLowerCase() === 'ue4ss.dll');
+  if (!dll) return null;
+  const from = path.dirname(dll);
+  const dir = path.join(work, 'wrapped', UE4SS_PACKAGE);
+  mkdirSync(dir, { recursive: true });
+  const entries = readdirSync(from).filter((e) => e.toLowerCase() !== 'dwmapi.dll');
+  for (const e of entries) cpSync(path.join(from, e), path.join(dir, e), { recursive: true });
+  const info: PalInfo & { ConvertedBy: string } = {
+    ModName: 'UE4SS',
+    PackageName: UE4SS_PACKAGE,
+    Version: contentVersion(dir),
+    Author: 'UE4SS team',
+    InstallRule: [{ Type: 'UE4SS', IsServer: true, Targets: entries.map((e) => `./${e}`) }],
+    ConvertedBy: 'Server Forge (from a UE4SS download)',
+  };
+  writeFileSync(path.join(dir, 'Info.json'), JSON.stringify(info, null, 2));
+  return dir;
+}
+
+/**
+ * Older UE4SS script mods (a folder with Scripts\main.lua or dlls\main.dll, no Info.json): wraps each as a package.
+ * Nothing says whether such a mod does its work on the server or in the game, so it goes to both. UE4SS turns it on from
+ * the mods.txt Palworld writes; enabled.txt would load it a second time, so it's left out.
+ */
+export function wrapLuaMods(root: string, name: string, work: string): string[] {
+  const homes = new Set<string>();
+  for (const f of filesIn(root)) {
+    const m = /^(.*)[\\/](?:scripts[\\/]main\.lua|dlls[\\/]main\.dll)$/i.exec(f);
+    if (m) homes.add(m[1]);
+  }
+  const out: string[] = [];
+  for (const home of homes) {
+    const label = home === root ? name.replace(/\.(zip|pak)$/i, '').replace(/-\d+(-[\d-]+)?$/, '') : path.basename(home);
+    const pkg = label.replace(/[^A-Za-z0-9_-]+/g, '').slice(0, 60) || 'LuaMod';
+    const dir = path.join(work, 'wrapped', pkg);
+    mkdirSync(dir, { recursive: true });
+    const entries = readdirSync(home).filter((e) => e.toLowerCase() !== 'enabled.txt');
+    for (const e of entries) cpSync(path.join(home, e), path.join(dir, e), { recursive: true });
+    const targets = entries.map((e) => `./${e}`);
+    const info: PalInfo & { ConvertedBy: string } = {
+      ModName: label,
+      PackageName: pkg,
+      Version: contentVersion(dir),
+      Author: 'unknown',
+      Dependencies: [UE4SS_PACKAGE],
+      InstallRule: [
+        { Type: 'Lua', Targets: targets },
+        { Type: 'Lua', IsServer: true, Targets: targets },
+      ],
+      ConvertedBy: 'Server Forge (from an older UE4SS mod)',
+    };
+    writeFileSync(path.join(dir, 'Info.json'), JSON.stringify(info, null, 2));
+    out.push(dir);
+  }
+  return out;
+}
+
 /** Unpacks (or copies) what was dropped and returns the mod folders in it, with the work folder to delete afterwards. */
 export async function unpackMods(file: string): Promise<{ work: string; dirs: string[]; wrapped: boolean }> {
   const work = path.join(os.tmpdir(), `sf-palmod-${randomUUID().slice(0, 8)}`);
@@ -263,9 +337,13 @@ export async function unpackMods(file: string): Promise<{ work: string; dirs: st
     let dirs = findPackages(top);
     let wrapped = false;
     if (!dirs.length) {
-      const one = wrapLegacyPaks(top, path.basename(file), work);
-      if (!one) throw new Error(`No Palworld mod was found in ${path.basename(file)}: there's no Info.json (made for Palworld's mod loader) and no .pak file.`);
-      dirs = [one];
+      const ue4ss = wrapUe4ss(top, work);
+      if (ue4ss) dirs = [ue4ss];
+      else {
+        const pak = wrapLegacyPaks(top, path.basename(file), work);
+        dirs = [...wrapLuaMods(top, path.basename(file), work), ...(pak ? [pak] : [])];
+      }
+      if (!dirs.length) throw new Error(`No Palworld mod was found in ${path.basename(file)}: there's no Info.json (made for Palworld's mod loader), UE4SS, UE4SS script mod (Scripts\\main.lua) or .pak file.`);
       wrapped = true;
     }
     return { work, dirs, wrapped };
@@ -342,7 +420,7 @@ export const palworldAddons: AddonSupport = {
     noun: 'mod',
     plural: 'mods',
     dropHelp:
-      'Drop a Palworld mod <b>.zip</b> (or its unpacked folder) here. Mods made for Palworld\'s mod loader have an <b>Info.json</b>; older mods that are only <b>.pak</b> files are converted. Palworld sets the mods up when the server starts.',
+      'Drop a Palworld mod <b>.zip</b> (or its unpacked folder) here. Mods made for Palworld\'s mod loader have an <b>Info.json</b>; <b>UE4SS</b>, older UE4SS script mods and mods that are only <b>.pak</b> files are converted. Palworld sets the mods up when the server starts.',
   }),
   links: [
     { label: 'CurseForge', url: 'https://www.curseforge.com/palworld', help: 'Palworld mods on CurseForge.' },
@@ -380,14 +458,24 @@ export const palworldAddons: AddonSupport = {
     const s = readModSettings(settingsFile(record));
     const all = installed(record);
     const have = new Set(all.map((m) => m.info.PackageName));
+    const hasUe4ss = all.some((m) => m.info.InstallRule.some((r) => r.Type === 'UE4SS' && r.IsServer === true));
+    const manualUe4ss = existsSync(path.join(record.installDir, 'Pal', 'Binaries', 'Win64', 'dwmapi.dll'));
     return all
       .map(({ folder, info }) => {
         const side = palSide(info);
         const warnings: { level: 'error' | 'warn'; text: string }[] = [];
         const problem = infoProblem(info);
         if (problem) warnings.push({ level: 'error', text: `Palworld will skip it: ${problem}.` });
-        const missing = (info.Dependencies ?? []).filter((d) => !have.has(String(d)));
+        const deps = (info.Dependencies ?? []).map(String);
+        const ue4ssDep = deps.some(isUe4ssDep);
+        const missing = deps.filter((d) => !isUe4ssDep(d) && !have.has(d));
         if (missing.length) warnings.push({ level: 'error', text: `Needs ${missing.join(', ')}, which ${missing.length === 1 ? "isn't" : "aren't"} installed.` });
+        // A players-only mod runs in the players' games, so it's their UE4SS that matters, not the server's.
+        if (ue4ssDep && side === 'players') warnings.push({ level: 'warn', text: 'Needs UE4SS in each player\'s game: "UE4SS Experimental (Palworld)" on the Steam Workshop.' });
+        else if (ue4ssDep && !hasUe4ss) warnings.push({ level: 'error', text: `Needs UE4SS on the server, which isn't installed. Download UE4SS-Palworld.zip from ${UE4SS_URL} and drop it here.` });
+        if (manualUe4ss && info.InstallRule.some((r) => r.Type === 'UE4SS' && r.IsServer === true)) {
+          warnings.push({ level: 'error', text: 'Pal\\Binaries\\Win64 also has a dwmapi.dll from a manual UE4SS install. Delete it: two copies of UE4SS crash the server.' });
+        }
         if (!WORKSHOP_FOLDER.test(folder)) warnings.push({ level: 'error', text: `Palworld skips it: its folder (Mods\\Workshop\\${folder}) isn't named with a number. Remove it and add it again.` });
         if (side === 'players') warnings.push({ level: 'warn', text: "Players only: the server doesn't use it. Players get it through the share link." });
         const types = [...new Set(info.InstallRule.map((r) => r.Type))].join(', ');
@@ -400,7 +488,7 @@ export const palworldAddons: AddonSupport = {
           name: info.ModName || info.PackageName,
           version: String(info.Version ?? ''),
           authors: info.Author ? String(info.Author) : null,
-          description: `${SIDE_TEXT[side]} · ${types}${(info as { ConvertedBy?: string }).ConvertedBy ? ' · converted from an older .pak mod' : ''}${pending}`,
+          description: `${SIDE_TEXT[side]} · ${types}${(info as { ConvertedBy?: string }).ConvertedBy ? ' · converted by Server Forge' : ''}${pending}`,
           typeLabel: SIDE_TEXT[side],
           typeClass: 'mod',
           enabled: on,
@@ -436,21 +524,41 @@ export const palworldAddons: AddonSupport = {
         rmSync(dest, { recursive: true, force: true });
         mkdirSync(path.dirname(dest), { recursive: true });
         cpSync(dir, dest, { recursive: true });
+        // UE4SS packaged only for players' games still works here: the server loads it the same way.
+        const ue4ssRules = info.InstallRule.filter((r) => r.Type === 'UE4SS');
+        if (ue4ssRules.length && !info.InstallRule.some((r) => r.IsServer === true)) {
+          for (const r of ue4ssRules) r.IsServer = true;
+          writeFileSync(path.join(dest, 'Info.json'), JSON.stringify(info, null, 2));
+        }
         setActive(record, info.PackageName, true);
         const name = info.ModName || info.PackageName;
         result.installed.push({ name, type: 'mod', version: String(info.Version ?? ''), action: old.length ? 'updated' : 'installed' });
         if (palSide(info) === 'players') result.warnings.push(`${name} is for players' games only, so the server doesn't use it. Players get it through the share link.`);
       }
-      const have = new Set(installed(record).map((m) => m.info.PackageName));
+      const now = installed(record);
+      const have = new Set(now.map((m) => m.info.PackageName));
+      const hasUe4ss = now.some((m) => m.info.InstallRule.some((r) => r.Type === 'UE4SS' && r.IsServer === true));
       for (const dir of dirs) {
         const info = readInfo(dir);
-        const missing = (info?.Dependencies ?? []).filter((d) => !have.has(String(d)));
-        if (info && missing.length) result.warnings.push(`${info.ModName || info.PackageName} needs ${missing.join(', ')}. Install ${missing.length === 1 ? 'it' : 'them'} too.`);
+        if (!info) continue;
+        const name = info.ModName || info.PackageName;
+        const deps = (info.Dependencies ?? []).map(String);
+        const missing = deps.filter((d) => !isUe4ssDep(d) && !have.has(d));
+        if (missing.length) result.warnings.push(`${name} needs ${missing.join(', ')}. Install ${missing.length === 1 ? 'it' : 'them'} too.`);
+        if (deps.some(isUe4ssDep)) {
+          if (palSide(info) === 'players') result.warnings.push(`${name} needs UE4SS in each player's game: "UE4SS Experimental (Palworld)" on the Steam Workshop.`);
+          else if (!hasUe4ss) result.warnings.push(`${name} needs UE4SS on the server. Download UE4SS-Palworld.zip from ${UE4SS_URL} and drop it here too.`);
+        }
       }
       if (wrapped) {
-        result.warnings.push(
-          "That was an older .pak mod without an Info.json, so Server Forge wrote one. Paks built for the server (\"WindowsServer\" in the name) are used on the server; the others are for players' games and reach players through the share link.",
-        );
+        const kinds = dirs.map((d) => readInfo(d)?.InstallRule[0]?.Type);
+        if (kinds.includes('UE4SS')) result.warnings.push("Server Forge packaged UE4SS for this server's mod loader, without dwmapi.dll (the server loads it directly). Players need their own copy for mods that use it.");
+        if (kinds.includes('Lua')) result.warnings.push('That was a UE4SS script mod without an Info.json, so Server Forge wrote one. It runs on the server and reaches players through the share link. Players also need UE4SS in their own game.');
+        if (kinds.includes('Paks') || kinds.includes('LogicMods')) {
+          result.warnings.push(
+            "That was an older .pak mod without an Info.json, so Server Forge wrote one. Paks built for the server (\"WindowsServer\" in the name) are used on the server; the others are for players' games and reach players through the share link.",
+          );
+        }
       }
       if (!result.installed.length && !result.warnings.length) throw new Error('No Palworld mod was found in that file.');
       return result;
