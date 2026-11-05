@@ -1014,7 +1014,7 @@ route('PUT', '/api/servers/:id/properties', async (ctx) => {
   if (!values || typeof values !== 'object') throw new HttpError(400, 'values must be an object.');
   const clean = Object.fromEntries(Object.entries(values as Record<string, unknown>).map(([k, v]) => [String(k), String(v)]));
   inst.module.properties.write(inst.record, clean);
-  audit(p, `changed ${Object.keys(clean).join(', ')} in "${inst.record.name}" server.properties`);
+  audit(p, `changed ${Object.keys(clean).join(', ')} in "${inst.record.name}" ${path.basename(inst.module.properties.read(inst.record).file)}`);
   return inst.module.properties.read(inst.record);
 });
 

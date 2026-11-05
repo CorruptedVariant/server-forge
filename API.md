@@ -1,6 +1,6 @@
 # Tavern Host HTTP API
 
-Reference for Tavern Host 0.9.4. This file is generated from the list in `public/app.js` (the same one the panel shows in Settings → API reference) by `node tools/make-api-docs.mjs`.
+Reference for Tavern Host 0.9.5. This file is generated from the list in `public/app.js` (the same one the panel shows in Settings → API reference) by `node tools/make-api-docs.mjs`.
 
 > Tavern Host is in beta and updates are frequent. Routes can change between versions; check this file for the version you run.
 
@@ -125,7 +125,7 @@ curl -X POST -H "Authorization: Bearer th_…" -H "Content-Type: application/jso
 
 | Request | What it does | Permission |
 |---|---|---|
-| `GET /api/servers/{id}/properties` | server.properties with descriptions | See the server |
+| `GET /api/servers/{id}/properties` | The game's settings file with descriptions (server.properties; Palworld: PalWorldSettings.ini) | See the server |
 | `PUT /api/servers/{id}/properties` | Change values: {"values":{"max-players":"20"}} | Edit properties & world |
 | `GET /api/servers/{id}/world` | Bedrock world: cheats, cheat settings, experiments | See the server |
 | `PUT /api/servers/{id}/world` | Change them: {"cheats","cheatSettings","experiments","restart"} | Edit properties & world (+ Restart when running) |

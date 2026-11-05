@@ -752,6 +752,7 @@ class ServerInstance {
       canCommand: this.takesCommands,
       countdown: this.countdown,
       hasProperties: !!this.module.properties,
+      propertiesLabel: this.module.propertiesLabel ?? 'Properties',
       canBackup: !!this.module.backup,
       hasAddons: !!this.module.addons && (this.module.addons.available?.(this.record) ?? true),
       addonsTab: this.module.addons?.labels?.(this.record).tab ?? 'Addons',

@@ -822,6 +822,7 @@ async function selectServer(id) {
   $('serverView').hidden = false;
   applyPermVisibility($('serverView'));
   $('tabBtnProperties').hidden = !state.detail.hasProperties;
+  $('tabBtnProperties').textContent = state.detail.propertiesLabel ?? 'Properties';
   $('tabBtnBackups').hidden = !state.detail.canBackup;
   if (state.tab === 'backups' && !state.detail.canBackup) state.tab = 'overview';
   $('tabBtnAddons').hidden = !state.detail.hasAddons;
@@ -1698,15 +1699,20 @@ function renderProperties() {
   const list = $('propList');
   list.innerHTML = '';
   const editable = hasPerm('properties.edit');
+  let section = null;
   for (const entry of props.entries) {
     const inFile = entry.value !== null;
-    if (entry.optional && !inFile && !showAdvanced && !filter) continue;
-    if (filter && !entry.key.includes(filter) && !entry.description.toLowerCase().includes(filter)) continue;
+    if ((entry.advanced || (entry.optional && !inFile)) && !showAdvanced && !filter) continue;
+    if (filter && !entry.key.toLowerCase().includes(filter) && !(entry.label ?? '').toLowerCase().includes(filter) && !entry.description.toLowerCase().includes(filter)) continue;
+    if (entry.section && entry.section !== section) {
+      section = entry.section;
+      list.appendChild(el('h4', 'section-label', section));
+    }
 
     const current = propChanges[entry.key] ?? entry.value ?? entry.defaultValue ?? '';
     const row = el('div', `prop${entry.key in propChanges ? ' changed' : ''}${entry.known ? '' : ' unknown'}`);
-    const key = el('div', 'key', entry.key);
-    key.appendChild(el('small', null, !entry.known ? 'Not a setting this server uses' : inFile ? '' : `Not in file (default: ${entry.defaultValue || 'empty'})`));
+    const key = el('div', entry.label ? 'key named' : 'key', entry.label ?? entry.key);
+    key.appendChild(el('small', null, !entry.known ? 'Not a setting this server uses' : !inFile ? `Not in file (default: ${entry.defaultValue || 'empty'})` : entry.label ? entry.key : ''));
     row.appendChild(key);
 
     let input;
@@ -1722,6 +1728,7 @@ function renderProperties() {
     } else {
       input = el('input');
       input.type = entry.type === 'number' ? 'number' : 'text';
+      if (entry.type === 'number') input.step = 'any';
       input.value = current;
     }
     input.disabled = !editable || !entry.known;
@@ -4921,7 +4928,7 @@ const API_DOCS = [
     ['DELETE', '/api/servers/{id}/diagnose', 'Clear the crash checker result', 'See the server'],
   ]],
   ['Properties & world', [
-    ['GET', '/api/servers/{id}/properties', 'server.properties with descriptions', 'See the server'],
+    ['GET', '/api/servers/{id}/properties', "The game's settings file with descriptions (server.properties; Palworld: PalWorldSettings.ini)", 'See the server'],
     ['PUT', '/api/servers/{id}/properties', 'Change values: {"values":{"max-players":"20"}}', 'Edit properties & world'],
     ['GET', '/api/servers/{id}/world', 'Bedrock world: cheats, cheat settings, experiments', 'See the server'],
     ['PUT', '/api/servers/{id}/world', 'Change them: {"cheats","cheatSettings","experiments","restart"}', 'Edit properties & world (+ Restart when running)'],

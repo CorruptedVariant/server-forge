@@ -82,6 +82,12 @@ export interface PropertyEntry {
   /** false = the game doesn't use this key (e.g. Java keys left in a Bedrock file). */
   known: boolean;
   optional: boolean;
+  /** Friendly name; the key is then shown small underneath it. */
+  label?: string;
+  /** Heading it's listed under. */
+  section?: string;
+  /** Hidden until "Show advanced" is on, or a search matches. */
+  advanced?: boolean;
 }
 
 export interface ConsoleIO {
@@ -262,6 +268,8 @@ export interface GameModule {
   listVersions?(from: string): Promise<string[]>;
   /** Settings file editor (Minecraft's server.properties). */
   properties?: PropertiesSupport;
+  /** Name of the tab for that editor. Default: "Properties". */
+  propertiesLabel?: string;
   /** What to back up (and how to do it safely while running). */
   backup?: BackupSupport;
   /** Addon/mod/plugin manager. */

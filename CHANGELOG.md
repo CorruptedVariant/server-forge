@@ -1,5 +1,18 @@
 # Changelog
 
+## Server Forge 0.9.5
+
+Change all of Palworld's world settings from Server Forge.
+
+**New**
+- **World settings tab for Palworld servers.** Every setting in `PalWorldSettings.ini` can now be changed here, with a plain name, an explanation and its default, grouped into sections such as Pals, Bases and building, Guilds and PvP. Search finds any setting, and **Show advanced** lists the rarely used ones. Changes apply when the server restarts.
+- Values outside Pocketpair's documented limits, and values of the wrong kind, are refused with a message saying why.
+- The tab warns if a world has a `WorldOption.sav`, which makes Palworld ignore most of these settings.
+
+**Changed**
+- Palworld's Difficulty, On death, XP rate, Capture rate and PvP moved from Settings to the World settings tab. Server Forge no longer overwrites them at each start, so values you've set in the file stay as they are.
+- PvP is now two settings, **PvP** and **Players can damage each other**. Turn on both for full PvP.
+
 ## SF Mod Manager 0.6.2
 
 A full Palworld mod manager, with Play now.

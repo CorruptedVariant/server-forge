@@ -172,6 +172,7 @@ main { overflow-y: auto; padding: 20px 24px; }
 .prop.changed { border-color: var(--accent-strong-border); }
 .prop.unknown { opacity: .75; }
 .prop .key { font: 600 13px var(--mono); word-break: break-all; padding-top: 6px; }
+.prop .key.named { font-family: inherit; word-break: normal; }
 .prop .key small { display: block; font: 400 11px "Segoe UI", sans-serif; color: var(--muted); }
 .prop .desc { color: var(--muted); font-size: 12.5px; white-space: pre-line; padding-top: 4px; }
 .prop input[type=checkbox] { width: auto; margin-top: 8px; accent-color: var(--accent); }

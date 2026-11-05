@@ -5,27 +5,16 @@
 // only its own keys in it, so every other setting stays as the owner set it.
 // Palworld's REST API (switched on here, on this system only, with the admin password) gives the player list,
 // announcements for countdowns, and a clean stop: save, then shut down.
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import type { GameModule, LogParser, LogState, ServerRecord, Settings } from './types.ts';
-import { STEAM_APPS, num, decimal, bool, text, newPassword, steamInstall } from './steam-games.ts';
+import type { GameModule, LogParser, LogState, PropertyEntry, ServerRecord, Settings } from './types.ts';
+import { STEAM_APPS, num, bool, text, newPassword, steamInstall } from './steam-games.ts';
 import { palworldAddons } from './palworld-mods.ts';
+import { PAL_MANAGED, PAL_SETTINGS, type PalSetting } from './palworld-settings.ts';
 
 const EXE = path.join('Pal', 'Binaries', 'Win64', 'PalServer-Win64-Shipping-Cmd.exe');
 const SETTINGS = path.join('Pal', 'Saved', 'Config', 'WindowsServer', 'PalWorldSettings.ini');
 const SECTION = '[/Script/Pal.PalGameWorldSettings]';
-
-const DIFFICULTY = [
-  { value: 'None', label: 'Normal (use the rates below)' },
-  { value: 'Casual', label: 'Casual' },
-  { value: 'Hard', label: 'Hard' },
-];
-const DEATH = [
-  { value: 'None', label: 'Keep everything' },
-  { value: 'Item', label: 'Drop items (not equipment)' },
-  { value: 'ItemAndEquipment', label: 'Drop items and equipment' },
-  { value: 'All', label: 'Drop everything, including Pals in the party' },
-];
 
 // ---------- the OptionSettings line ----------
 
@@ -79,8 +68,6 @@ export function writeOptions(text: string, values: Record<string, string>): stri
 }
 
 const quote = (s: string) => `"${String(s).replace(/"/g, "'")}"`;
-const flt = (n: unknown) => Number(n).toFixed(6);
-const tf = (b: unknown) => (b ? 'True' : 'False');
 
 function settingsText(record: ServerRecord): string {
   const file = path.join(record.installDir, SETTINGS);
@@ -102,12 +89,6 @@ function writeSettings(record: ServerRecord) {
       ServerPassword: quote(String(s.password ?? '')),
       PublicPort: String(s.port),
       ServerPlayerMaxNum: String(s.maxPlayers),
-      Difficulty: String(s.difficulty),
-      DeathPenalty: String(s.deathPenalty),
-      ExpRate: flt(s.expRate),
-      PalCaptureRate: flt(s.captureRate),
-      bIsPvP: tf(s.pvp),
-      bEnablePlayerToPlayerDamage: tf(s.pvp),
       // Server Forge's own access: the REST API on this system only.
       RESTAPIEnabled: 'True',
       RESTAPIPort: String(s.restPort),
@@ -117,6 +98,121 @@ function writeSettings(record: ServerRecord) {
     }),
   );
 }
+
+// ---------- World settings tab: the rest of the OptionSettings line, edited in place ----------
+
+/** What the editor shows for a value in the file: "1.000000" -> "1", "True" -> "true", "\"text\"" -> "text". */
+function shownValue(raw: string, type: PalSetting['type']): string {
+  if (type === 'bool') return raw.trim().toLowerCase();
+  if (type === 'rate' || type === 'decimal' || type === 'int') return Number.isFinite(Number(raw)) && raw.trim() !== '' ? String(Number(raw)) : raw;
+  if (type === 'text') return raw.replace(/^"(.*)"$/, '$1');
+  return raw;
+}
+
+/** The type of a setting that isn't in our list (added by a newer game version), from how it looks in the file. */
+function guessType(raw: string): PalSetting['type'] {
+  if (/^(true|false)$/i.test(raw)) return 'bool';
+  if (/^-?\d+$/.test(raw)) return 'int';
+  if (/^-?\d*\.\d+$/.test(raw)) return 'decimal';
+  if (raw.startsWith('(')) return 'list';
+  return 'text';
+}
+
+/** What goes in the file for a value from the editor. Throws a message the owner can act on. */
+function fileValue(value: string, info: Pick<PalSetting, 'label' | 'type' | 'options' | 'min' | 'max'>): string {
+  const v = value.trim();
+  const { label, type } = info;
+  if (type === 'bool') {
+    if (!/^(true|false)$/i.test(v)) throw new Error(`${label} must be on or off.`);
+    return v.toLowerCase() === 'true' ? 'True' : 'False';
+  }
+  if (type === 'select') {
+    if (!info.options?.includes(v)) throw new Error(`${label} must be one of: ${info.options?.join(', ')}.`);
+    return v;
+  }
+  if (type === 'rate' || type === 'decimal' || type === 'int') {
+    const n = Number(v);
+    if (v === '' || !Number.isFinite(n)) throw new Error(`${label} must be a number.`);
+    if (type === 'int' && !Number.isInteger(n)) throw new Error(`${label} must be a whole number.`);
+    if (info.min !== undefined && n < info.min) throw new Error(`${label} can't be below ${info.min}.`);
+    if (info.max !== undefined && n > info.max) throw new Error(`${label} can't be above ${info.max}.`);
+    return type === 'int' ? String(n) : n.toFixed(6);
+  }
+  if (type === 'list') {
+    const inner = v.replace(/^\(/, '').replace(/\)$/, '').trim();
+    if (!/^[\w ,.-]*$/.test(inner)) throw new Error(`${label} should look like (One,Two).`);
+    const items = inner.split(',').map((x) => x.trim()).filter(Boolean);
+    return items.length ? `(${items.join(',')})` : '';
+  }
+  if (/[\r\n]/.test(v)) throw new Error(`${label} can't contain line breaks.`);
+  return quote(v);
+}
+
+/** A world made in the game (or copied from one) keeps its settings in WorldOption.sav, which beats the ini file. */
+function worldOptionFile(record: ServerRecord): string | null {
+  const saves = path.join(record.installDir, 'Pal', 'Saved', 'SaveGames', '0');
+  if (!existsSync(saves)) return null;
+  for (const world of readdirSync(saves, { withFileTypes: true })) {
+    if (!world.isDirectory()) continue;
+    const file = path.join(saves, world.name, 'WorldOption.sav');
+    if (existsSync(file)) return file;
+  }
+  return null;
+}
+
+const palworldProperties: NonNullable<GameModule['properties']> = {
+  read(record) {
+    const file = path.join(record.installDir, SETTINGS);
+    const values = readOptions(settingsText(record));
+    const def = path.join(record.installDir, 'DefaultPalWorldSettings.ini');
+    const defaults = existsSync(def) ? readOptions(readFileSync(def, 'utf-8').split(/\r?\n/).filter((l) => !l.startsWith(';')).join('\r\n')) : new Map<string, string>();
+    const entry = (info: PalSetting): PropertyEntry => {
+      const raw = values.get(info.key);
+      const rawDefault = defaults.get(info.key);
+      const defaultValue = rawDefault === undefined ? null : shownValue(rawDefault, info.type);
+      const shownDefault = defaultValue === null ? '' : ` Default: ${defaultValue === 'true' ? 'on' : defaultValue === 'false' ? 'off' : defaultValue || 'empty'}.`;
+      return {
+        key: info.key,
+        value: raw === undefined ? null : shownValue(raw, info.type),
+        defaultValue,
+        description: `${info.desc}${shownDefault}`,
+        type: info.type === 'bool' ? 'boolean' : info.type === 'select' ? 'select' : info.type === 'text' || info.type === 'list' ? 'text' : 'number',
+        options: info.options,
+        known: true,
+        optional: false,
+        label: info.label,
+        section: info.section,
+        advanced: info.advanced,
+      };
+    };
+    const listed = new Set(PAL_SETTINGS.map((s) => s.key));
+    const others = [...values.keys()].filter((k) => !listed.has(k) && !PAL_MANAGED.has(k));
+    const worldOption = worldOptionFile(record);
+    return {
+      file,
+      entries: [
+        ...PAL_SETTINGS.map(entry),
+        ...others.map((key) => entry({ key, label: key, desc: 'A setting Server Forge has no description for yet.', type: guessType(values.get(key)!), section: 'Other' })),
+      ],
+      problems: worldOption ? [`This world has a WorldOption.sav, so Palworld ignores most of these settings. To use them, stop the server, back up the world, then delete ${worldOption}.`] : [],
+    };
+  },
+  write(record, changes) {
+    const existing = readOptions(settingsText(record));
+    const out: Record<string, string> = {};
+    for (const [key, value] of Object.entries(changes)) {
+      if (PAL_MANAGED.has(key)) throw new Error(`${key} is set on the Settings tab.`);
+      const known = PAL_SETTINGS.find((s) => s.key === key);
+      if (!known && !existing.has(key)) throw new Error(`${key} isn't a Palworld setting.`);
+      out[key] = fileValue(value, known ?? { label: key, type: guessType(existing.get(key)!) });
+    }
+    const file = path.join(record.installDir, SETTINGS);
+    mkdirSync(path.dirname(file), { recursive: true });
+    const tmp = `${file}.tavernhost-tmp`;
+    writeFileSync(tmp, writeOptions(settingsText(record), out));
+    renameSync(tmp, file);
+  },
+};
 
 // ---------- REST API ----------
 
@@ -181,11 +277,6 @@ export const palworld: GameModule = {
     { key: 'adminPassword', label: 'Admin password', type: 'password', help: 'For /AdminPassword in the game. Server Forge also uses it for the server API (players, warnings, clean stops).', restart: true },
     { key: 'maxPlayers', label: 'Max players', type: 'number', help: 'Up to 32.', restart: true },
     { key: 'public', label: 'List as a community server', type: 'boolean', help: 'Show in the in-game community server list.', restart: true },
-    { key: 'difficulty', label: 'Difficulty', type: 'select', options: DIFFICULTY, restart: true, section: 'World' },
-    { key: 'deathPenalty', label: 'On death', type: 'select', options: DEATH, restart: true, section: 'World' },
-    { key: 'expRate', label: 'XP rate', type: 'number', help: '1 = normal.', restart: true, section: 'World' },
-    { key: 'captureRate', label: 'Capture rate', type: 'number', help: '1 = normal.', restart: true, section: 'World' },
-    { key: 'pvp', label: 'PvP', type: 'boolean', restart: true, section: 'World' },
     { key: 'restPort', label: 'API port (this system only)', type: 'number', help: 'Default 8212. Used by Server Forge; no need to forward it.', restart: true, section: 'Advanced' },
   ],
   quickFields: ['serverName', 'port', 'password', 'adminPassword', 'maxPlayers'],
@@ -198,21 +289,12 @@ export const palworld: GameModule = {
     adminPassword: newPassword(),
     maxPlayers: 32,
     public: false,
-    difficulty: 'None',
-    deathPenalty: 'Item',
-    expRate: 1,
-    captureRate: 1,
-    pvp: false,
     restPort: 8212,
   }),
 
   validate(s: Settings): Settings {
     const adminPassword = text(s.adminPassword, 'Admin password', 64, true);
     if (/["\\]/.test(adminPassword + String(s.password ?? ''))) throw new Error('Passwords can\'t contain " or \\.');
-    const difficulty = String(s.difficulty ?? 'None');
-    const deathPenalty = String(s.deathPenalty ?? 'Item');
-    if (!DIFFICULTY.some((d) => d.value === difficulty)) throw new Error('Pick a difficulty.');
-    if (!DEATH.some((d) => d.value === deathPenalty)) throw new Error('Pick what happens on death.');
     const port = num(s.port, 'Port', 1024, 65535);
     const restPort = num(s.restPort ?? 8212, 'API port', 1024, 65535);
     if (port === restPort) throw new Error('The API port must be different from the game port.');
@@ -224,11 +306,6 @@ export const palworld: GameModule = {
       adminPassword,
       maxPlayers: num(s.maxPlayers, 'Max players', 1, 32),
       public: bool(s.public),
-      difficulty,
-      deathPenalty,
-      expRate: decimal(s.expRate ?? 1, 'XP rate', 0.1, 20),
-      captureRate: decimal(s.captureRate ?? 1, 'Capture rate', 0.5, 2),
-      pvp: bool(s.pvp),
       restPort,
     };
   },
@@ -304,6 +381,9 @@ export const palworld: GameModule = {
   },
 
   connection: (record) => ({ port: Number(record.settings.port) || 8211, protocol: 'UDP', maxPlayers: Number(record.settings.maxPlayers) || null }),
+
+  properties: palworldProperties,
+  propertiesLabel: 'World settings',
 
   backup: { sources: (record) => ({ base: path.join(record.installDir, 'Pal', 'Saved'), include: ['SaveGames', 'Config'], world: 'SaveGames' }) },
 
