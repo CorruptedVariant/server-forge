@@ -5,7 +5,7 @@
 // only its own keys in it, so every other setting stays as the owner set it.
 // Palworld's REST API (switched on here, on this system only, with the admin password) gives the player list,
 // announcements for countdowns, and a clean stop: save, then shut down.
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import type { GameModule, LogParser, LogState, PropertyEntry, ServerRecord, Settings } from './types.ts';
 import { STEAM_APPS, num, bool, text, newPassword, steamInstall } from './steam-games.ts';
@@ -76,6 +76,18 @@ function settingsText(record: ServerRecord): string {
   return existsSync(def) ? readFileSync(def, 'utf-8').split(/\r?\n/).filter((l) => !l.startsWith(';')).join('\r\n') : `${SECTION}\r\nOptionSettings=()\r\n`;
 }
 
+// A running server writes the settings it started with back over the file when it shuts down, which would undo anything
+// saved from the World settings tab in the meantime. So saved changes are also kept here until the next start applies them.
+const pendingFile = (record: ServerRecord) => path.join(record.installDir, `${SETTINGS}.pending.json`);
+
+function readPending(record: ServerRecord): Record<string, string> {
+  try {
+    return JSON.parse(readFileSync(pendingFile(record), 'utf-8'));
+  } catch {
+    return {};
+  }
+}
+
 function writeSettings(record: ServerRecord) {
   const s = record.settings;
   const file = path.join(record.installDir, SETTINGS);
@@ -83,6 +95,7 @@ function writeSettings(record: ServerRecord) {
   writeFileSync(
     file,
     writeOptions(settingsText(record), {
+      ...readPending(record),
       ServerName: quote(String(s.serverName)),
       ServerDescription: quote(String(s.description ?? '')),
       AdminPassword: quote(String(s.adminPassword)),
@@ -97,6 +110,7 @@ function writeSettings(record: ServerRecord) {
       bIsShowJoinLeftMessage: 'True',
     }),
   );
+  rmSync(pendingFile(record), { force: true });
 }
 
 // ---------- World settings tab: the rest of the OptionSettings line, edited in place ----------
@@ -164,6 +178,7 @@ const palworldProperties: NonNullable<GameModule['properties']> = {
   read(record) {
     const file = path.join(record.installDir, SETTINGS);
     const values = readOptions(settingsText(record));
+    for (const [k, v] of Object.entries(readPending(record))) values.set(k, v);
     const def = path.join(record.installDir, 'DefaultPalWorldSettings.ini');
     const defaults = existsSync(def) ? readOptions(readFileSync(def, 'utf-8').split(/\r?\n/).filter((l) => !l.startsWith(';')).join('\r\n')) : new Map<string, string>();
     const entry = (info: PalSetting): PropertyEntry => {
@@ -199,7 +214,7 @@ const palworldProperties: NonNullable<GameModule['properties']> = {
   },
   write(record, changes) {
     const existing = readOptions(settingsText(record));
-    const out: Record<string, string> = {};
+    const out: Record<string, string> = readPending(record);
     for (const [key, value] of Object.entries(changes)) {
       if (PAL_MANAGED.has(key)) throw new Error(`${key} is set on the Settings tab.`);
       const known = PAL_SETTINGS.find((s) => s.key === key);
@@ -208,6 +223,7 @@ const palworldProperties: NonNullable<GameModule['properties']> = {
     }
     const file = path.join(record.installDir, SETTINGS);
     mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(pendingFile(record), JSON.stringify(out));
     const tmp = `${file}.tavernhost-tmp`;
     writeFileSync(tmp, writeOptions(settingsText(record), out));
     renameSync(tmp, file);

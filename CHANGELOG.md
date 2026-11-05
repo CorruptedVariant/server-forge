@@ -1,5 +1,12 @@
 # Changelog
 
+## Server Forge 0.9.6
+
+Palworld world settings saved while the server is running now apply.
+
+**Fixed**
+- **Palworld World settings saved while the server was running were lost.** The tab said they were saved, but Palworld wrote its old values back over the file when it shut down, so the restart loaded the old settings. Server Forge now holds your changes and applies them just before the next start. If your changes didn't take in 0.9.5, enter them again.
+
 ## Server Forge 0.9.5
 
 Change all of Palworld's world settings from Server Forge.

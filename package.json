@@ -1,7 +1,7 @@
 {
   "name": "tavern-host",
   "productName": "Server Forge",
-  "version": "0.9.5",
+  "version": "0.9.6",
   "description": "Server Forge: a control panel for hosting and managing game servers.",
   "author": "CorruptedVariant",
   "private": true,
