@@ -152,7 +152,7 @@ function findArgsFile(dir: string, group: string): string | null {
   const root = path.join(dir, 'libraries', ...group.split('/'));
   if (!existsSync(root)) return null;
   for (const v of readdirSync(root)) {
-    const f = path.join(root, v, 'win_args.txt');
+    const f = path.join(root, v, process.platform === 'linux' ? 'unix_args.txt' : 'win_args.txt');
     if (existsSync(f)) return path.relative(dir, f);
   }
   return null;

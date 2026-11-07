@@ -16,6 +16,7 @@ export const VC_REDIST_URL = 'https://aka.ms/vs/17/release/vc_redist.x64.exe';
 
 /** The Visual C++ DLLs that Windows can't find for this server (System32, or next to the exe). */
 export function missingVcDlls(installDir: string): string[] {
+  if (process.platform === 'linux') return []; // the Linux server doesn't use them
   const sys = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32');
   return VC_DLLS.filter((d) => !existsSync(path.join(sys, d)) && !existsSync(path.join(installDir, d)));
 }

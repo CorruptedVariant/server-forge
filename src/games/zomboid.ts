@@ -6,12 +6,16 @@
 // It reads typed commands, so it runs under the runner: Console tab, kick/ban, countdown messages ("servermsg"), and Stop
 // types "quit" (the server saves first). Server Forge sets a few keys in <name>.ini before every start and keeps the
 // rest; Steam Workshop mods are listed there too (WorkshopItems / Mods), and the server downloads them itself.
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { bin, isLinux } from '../platform/host.ts';
 import path from 'node:path';
-import type { GameModule, LogParser, LogState, ServerRecord, Settings } from './types.ts';
+import type { AddonSupport, GameModule, LogParser, LogState, ServerRecord, Settings } from './types.ts';
+import { updateServer } from '../instances.ts';
+import { workshopDownload } from '../steamcmd.ts';
+import { workshopId, workshopTitle } from '../workshop.ts';
 import { STEAM_APPS, num, bool, text, newPassword, steamInstall } from './steam-games.ts';
 
-const JAVA = path.join('jre64', 'bin', 'java.exe');
+const JAVA = path.join('jre64', 'bin', bin('java.exe', 'java'));
 const cacheDir = (record: ServerRecord) => path.join(record.installDir, 'Zomboid');
 const iniFile = (record: ServerRecord) => path.join(cacheDir(record), 'Server', `${record.settings.world}.ini`);
 
@@ -80,10 +84,145 @@ function createZomboidParser(): LogParser {
 
 const quoteName = (s: string) => `"${String(s).replace(/"/g, '')}"`;
 
+// ---------- mods: Workshop items and their mod IDs, kept in the WorkshopItems and Mods settings ----------
+
+const ZOMBOID_GAME_APP = 108600; // the game itself: Workshop items must belong to it
+
+interface WorkshopEntry {
+  id: string;
+  name: string;
+  modIds: string[];
+}
+
+/** Titles and mod IDs of the items added here. The settings stay the source of truth, so hand-typed IDs still work. */
+const entriesFile = (record: ServerRecord) => path.join(cacheDir(record), 'server-forge-workshop.json');
+
+function readEntries(record: ServerRecord): WorkshopEntry[] {
+  try {
+    const list = JSON.parse(readFileSync(entriesFile(record), 'utf-8'));
+    return Array.isArray(list) ? list : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeEntries(record: ServerRecord, list: WorkshopEntry[]) {
+  mkdirSync(cacheDir(record), { recursive: true });
+  writeFileSync(entriesFile(record), JSON.stringify(list, null, 2));
+}
+
+const splitIds = (v: unknown) => String(v ?? '').split(';').map((x) => x.trim()).filter(Boolean);
+
+/** What the server needs to know from a downloaded item: its mod IDs, what they require, and any maps. */
+function readItem(dir: string) {
+  const modIds = new Set<string>();
+  const requires = new Set<string>();
+  const maps = new Set<string>();
+  let build42 = false;
+  const stack = [dir];
+  while (stack.length) {
+    const current = stack.pop()!;
+    for (const e of readdirSync(current, { withFileTypes: true })) {
+      const full = path.join(current, e.name);
+      if (e.isDirectory()) {
+        if (path.basename(current).toLowerCase() === 'maps' && path.basename(path.dirname(current)).toLowerCase() === 'media') maps.add(e.name);
+        stack.push(full);
+      } else if (e.isFile() && e.name.toLowerCase() === 'mod.info') {
+        // Build 42 mods keep this in a version folder (mods\Name\42\ or mods\Name\common\).
+        if (/^(42(\.\d+)*|common)$/i.test(path.basename(current))) build42 = true;
+        for (const line of readFileSync(full, 'utf-8').replace(/^\uFEFF/, '').split(/\r?\n/)) {
+          const m = /^\s*(id|require)\s*=\s*(.*?)\s*$/i.exec(line);
+          if (!m) continue;
+          const values = m[2].split(/[,;]/).map((x) => x.replace(/^\\+/, '').trim()).filter(Boolean);
+          for (const v of values) (m[1].toLowerCase() === 'id' ? modIds : requires).add(v);
+        }
+      }
+    }
+  }
+  return { modIds: [...modIds], requires: [...requires], maps: [...maps], build42 };
+}
+
+const zomboidAddons: AddonSupport = {
+  accept: '',
+  readOnly: false,
+  labels: () => ({
+    tab: 'Mods',
+    noun: 'mod',
+    plural: 'mods',
+    dropHelp: 'Get mods from the Steam Workshop below. The server downloads its mods when it starts, and players’ games download them when they join. Restart the server to apply.',
+  }),
+  links: [],
+  workshop: { url: 'https://steamcommunity.com/app/108600/workshop/', needsLogin: true },
+  list(record) {
+    const entries = readEntries(record);
+    const on = new Set(splitIds(record.settings.mods));
+    return splitIds(record.settings.workshopItems).map((id) => {
+      const e = entries.find((x) => x.id === id);
+      return {
+        id,
+        name: e?.name ?? `Workshop item ${id}`,
+        enabled: e?.modIds.length ? e.modIds.some((m) => on.has(m)) : true,
+        source: 'Steam Workshop',
+        version: '',
+        type: 'mod',
+        typeLabel: 'Workshop mod',
+        typeClass: 'behavior',
+        url: `https://steamcommunity.com/sharedfiles/filedetails/?id=${id}`,
+      };
+    });
+  },
+  async install() {
+    throw new Error('Add Project Zomboid mods by their Workshop link or ID.');
+  },
+  async addById(record, input) {
+    const id = workshopId(input);
+    const items = splitIds(record.settings.workshopItems);
+    if (items.includes(id)) throw new Error('That mod is already on the list.');
+    const name = await workshopTitle(id, ZOMBOID_GAME_APP, 'Project Zomboid');
+    // Only to read its mod IDs: the server downloads its own copy when it starts.
+    const { root, dir } = await workshopDownload(ZOMBOID_GAME_APP, id, 'Project Zomboid');
+    let item;
+    try {
+      item = readItem(dir);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+    if (!item.modIds.length) throw new Error("That Workshop item has no mod.info file, so it isn't a mod the server can load.");
+    const mods = splitIds(record.settings.mods);
+    updateServer(record.id, { settings: { workshopItems: [...items, id].join(';'), mods: [...mods, ...item.modIds.filter((m) => !mods.includes(m))].join(';') } });
+    writeEntries(record, [...readEntries(record).filter((e) => e.id !== id), { id, name, modIds: item.modIds }]);
+    const warnings = ['Restart the server to load it.'];
+    if (!item.build42) warnings.push("This looks like a Build 41 mod. Steam's current server is Build 42, which won't load it: the log will say the mod was not found. Look for a Build 42 version on the Workshop.");
+    if (item.modIds.length > 1) warnings.push(`It contains several mods, and all were switched on: ${item.modIds.join(', ')}. Some items offer alternatives that clash, so check its Workshop page and remove any you don't want from Mod IDs in Settings.`);
+    const have = new Set([...mods, ...item.modIds]);
+    const missing = item.requires.filter((r) => !have.has(r));
+    if (missing.length) warnings.push(`It needs ${missing.join(', ')}. Add ${missing.length === 1 ? 'that mod' : 'those mods'} too.`);
+    if (item.maps.length) warnings.push(`It includes a map (${item.maps.join(', ')}). Server Forge doesn't set maps: add it to the Map= line in the server's .ini file.`);
+    return { installed: [{ name, action: 'installed' }], warnings };
+  },
+  remove(record, id) {
+    const items = splitIds(record.settings.workshopItems);
+    if (!items.includes(id)) throw new Error('That mod is not on the list.');
+    const entries = readEntries(record);
+    const drop = new Set(entries.find((e) => e.id === id)?.modIds ?? []);
+    // A mod ID another listed item also provides stays.
+    for (const e of entries) if (e.id !== id) for (const m of e.modIds) drop.delete(m);
+    updateServer(record.id, { settings: { workshopItems: items.filter((x) => x !== id).join(';'), mods: splitIds(record.settings.mods).filter((m) => !drop.has(m)).join(';') } });
+    writeEntries(record, entries.filter((e) => e.id !== id));
+  },
+  setEnabled(record, id, enabled) {
+    const ids = readEntries(record).find((e) => e.id === id)?.modIds;
+    if (!ids?.length) throw new Error("That mod's IDs were typed by hand: change them under Mod IDs in Settings.");
+    const mods = splitIds(record.settings.mods).filter((m) => !ids.includes(m));
+    updateServer(record.id, { settings: { mods: (enabled ? [...mods, ...ids] : mods).join(';') } });
+  },
+  icon: () => null,
+};
+
 export const zomboid: GameModule = {
   id: 'zomboid',
   name: 'Project Zomboid',
-  processName: 'java.exe',
+  processName: bin('java.exe', 'java'),
 
   fields: [
     { key: 'serverName', label: 'Server name', type: 'text', help: 'Shown in the public server list.', restart: true },
@@ -163,9 +302,9 @@ export const zomboid: GameModule = {
         '-XX:-OmitStackTraceInFastThrow',
         `-Xms${s.memoryMb}m`,
         `-Xmx${s.memoryMb}m`,
-        '-Djava.library.path=natives/',
+        isLinux ? '-Djava.library.path=linux64/:natives/' : '-Djava.library.path=natives/',
         '-cp',
-        'java/;java/projectzomboid.jar',
+        isLinux ? 'java/:java/projectzomboid.jar' : 'java/;java/projectzomboid.jar',
         'zombie.network.GameServer',
         '-statistic',
         '0',
@@ -176,6 +315,7 @@ export const zomboid: GameModule = {
         String(s.adminPassword),
       ],
       cwd: record.installDir,
+      ...(isLinux ? { env: { LD_LIBRARY_PATH: 'linux64:natives:jre64/lib' } } : {}),
     };
   },
 
@@ -205,6 +345,8 @@ export const zomboid: GameModule = {
       world: 'Saves',
     }),
   },
+
+  addons: zomboidAddons,
 
   install: (record, job) => steamInstall(record, job, STEAM_APPS.zomboid, JAVA, 'Project Zomboid'),
 };

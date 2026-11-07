@@ -4,6 +4,7 @@
 // admin once). It runs under Server Forge's runner (output captured, commands piped, Stop types "exit" so it saves).
 // World settings, the serverconfig.txt and the log reader are shared with Terraria (tModLoader).
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, cpSync, rmSync } from 'node:fs';
+import { bin, isLinux } from '../platform/host.ts';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { randomBytes } from 'node:crypto';
@@ -15,7 +16,8 @@ import type { GameModule } from './types.ts';
 import type { Job } from '../jobs.ts';
 
 const execFileAsync = promisify(execFile);
-const EXE = 'TerrariaServer.exe';
+const EXE = bin('TerrariaServer.exe', 'TerrariaServer.bin.x86_64');
+const ZIP_FOLDER = bin('Windows', 'Linux');
 const VERSION_FILE = '.tavernhost-version';
 const CONFIG_FILE = 'tavernhost-serverconfig.txt';
 const XNA_MSI = 'https://download.microsoft.com/download/A/C/2/AC2C903B-E6E8-42C2-9FD7-BEBAC362A930/xnafx40_redist.msi';
@@ -46,7 +48,7 @@ function xnaInstalled(): boolean {
 
 /** Installs Microsoft's XNA Framework 4.0 Redistributable (Windows shows its admin prompt). */
 async function ensureXna(note: (m: string) => void) {
-  if (xnaInstalled()) return;
+  if (isLinux || xnaInstalled()) return; // the Linux server brings what it needs
   note('Installing Microsoft XNA Framework 4.0 (the vanilla Terraria server needs it). Windows will ask for admin permission…');
   const work = path.join(os.tmpdir(), `tavernhost-xna-${randomBytes(4).toString('hex')}`);
   mkdirSync(work, { recursive: true });
@@ -115,11 +117,11 @@ export const terrariaVanilla: GameModule = {
       await downloadFile(`https://terraria.org/api/download/pc-dedicated-server/${latest.file}`, zip);
       job.update('Unpacking…', null);
       await extractZip(zip, path.join(work, 'x'));
-      // The zip holds <version>/Windows, Linux and Mac; only the Windows server is used.
-      const top = readdirSync(path.join(work, 'x')).find((d) => existsSync(path.join(work, 'x', d, 'Windows', EXE)));
-      if (!top) throw new Error('The download has no Windows server in it.');
+      // The zip holds <version>/Windows, Linux and Mac; only this system's server is used.
+      const top = readdirSync(path.join(work, 'x')).find((d) => existsSync(path.join(work, 'x', d, ZIP_FOLDER, EXE)));
+      if (!top) throw new Error(`The download has no ${ZIP_FOLDER} server in it.`);
       mkdirSync(record.installDir, { recursive: true });
-      cpSync(path.join(work, 'x', top, 'Windows'), record.installDir, { recursive: true, force: true });
+      cpSync(path.join(work, 'x', top, ZIP_FOLDER), record.installDir, { recursive: true, force: true });
       writeFileSync(path.join(record.installDir, VERSION_FILE), latest.version);
       job.line(`Terraria ${latest.version} dedicated server is installed.`);
       await ensureXna((m) => job.line(m));

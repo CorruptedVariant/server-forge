@@ -1,10 +1,12 @@
-// Starting, stopping and watching game server processes. Windows-only for now; Linux would add its own
-// implementation behind the same functions (there, a graceful stop is just SIGINT).
-import { execFile } from 'node:child_process';
+// Starting, stopping and watching game server processes. Windows uses the helper scripts in scripts/; on Linux a program
+// is its own process group (so it outlives the panel), a graceful stop is SIGINT, and /proc answers the questions.
+import { execFile, spawn } from 'node:child_process';
+import { chmodSync, readFileSync, readdirSync, readlinkSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import net from 'node:net';
+import { isLinux } from './host.ts';
 
 const execFileAsync = promisify(execFile);
 const scriptsDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'scripts');
@@ -33,6 +35,7 @@ export interface StartOptions {
 
 /** Programs keeping `target` (file or folder) busy, e.g. "File Explorer (window open at C:\...)". Best effort. */
 export async function findLockers(target: string): Promise<string[]> {
+  if (isLinux) return []; // Linux doesn't lock open files, so nothing can be "in the way" of deleting one.
   try {
     const { stdout } = await powershell('find-lockers.ps1', [], { PANEL_TARGET: target });
     return stdout
@@ -50,6 +53,18 @@ export async function findLockers(target: string): Promise<string[]> {
 
 /** Programs running from inside `folder` (e.g. a game server another panel started there). Best effort. */
 export async function processesRunningFrom(folder: string): Promise<{ pid: number; exe: string }[]> {
+  if (isLinux) {
+    const root = path.resolve(folder) + path.sep;
+    const out: { pid: number; exe: string }[] = [];
+    for (const name of readdirSync('/proc')) {
+      if (!/^\d+$/.test(name)) continue;
+      try {
+        const exe = readlinkSync(`/proc/${name}/exe`);
+        if (exe.startsWith(root)) out.push({ pid: Number(name), exe });
+      } catch {} // gone already, or another user's process
+    }
+    return out;
+  }
   try {
     const { stdout } = await execFileAsync(
       'powershell.exe',
@@ -71,8 +86,26 @@ export async function processesRunningFrom(folder: string): Promise<{ pid: numbe
   }
 }
 
+/** Unpacked from a zip or a Steam depot, a game's program can arrive without its "executable" flag (Linux). */
+export function makeExecutable(file: string) {
+  try {
+    if (!(statSync(file).mode & 0o100)) chmodSync(file, 0o755);
+  } catch {}
+}
+
 /** Starts the program in its own hidden console. Returns its PID. */
 export async function startHidden(opts: StartOptions): Promise<number> {
+  if (isLinux) {
+    makeExecutable(opts.exe);
+    return new Promise((resolve, reject) => {
+      const child = spawn(opts.exe, opts.args, { cwd: opts.cwd, env: { ...process.env, ...opts.env }, detached: true, stdio: 'ignore' });
+      child.once('error', (err) => reject(new Error(`Could not start ${path.basename(opts.exe)}: ${err.message}`)));
+      child.once('spawn', () => {
+        child.unref();
+        resolve(child.pid!);
+      });
+    });
+  }
   const spec = { exe: opts.exe, args: opts.args.map(quoteArg).join(' '), cwd: opts.cwd, env: opts.env ?? {} };
   const { stdout } = await powershell('start-hidden.ps1', [], { PANEL_START: JSON.stringify(spec) });
   const pid = Number(stdout.trim().split(/\s+/).pop());
@@ -93,6 +126,17 @@ export function isAlive(pid: number | null | undefined): boolean {
 
 /** The executable name for a PID (e.g. "valheim_server.exe"), or null if it isn't running. Guards against PID reuse. */
 export async function processName(pid: number): Promise<string | null> {
+  if (isLinux) {
+    try {
+      return path.basename(readlinkSync(`/proc/${pid}/exe`).replace(/ \(deleted\)$/, ''));
+    } catch {
+      try {
+        return readFileSync(`/proc/${pid}/comm`, 'utf-8').trim() || null;
+      } catch {
+        return null;
+      }
+    }
+  }
   try {
     const { stdout } = await execFileAsync('tasklist.exe', ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'], { windowsHide: true });
     const m = /^"([^"]+)","(\d+)"/m.exec(stdout);
@@ -104,6 +148,20 @@ export async function processName(pid: number): Promise<string | null> {
 
 /** Asks the process to exit by sending Ctrl+C to its console. Resolves true if the signal was delivered. */
 export async function sendCtrlC(pid: number): Promise<boolean> {
+  if (isLinux) {
+    // The whole group: under the runner the game is the runner's child, and Ctrl+C on a console reaches both.
+    try {
+      process.kill(-pid, 'SIGINT');
+      return true;
+    } catch {
+      try {
+        process.kill(pid, 'SIGINT');
+        return true;
+      } catch {
+        return false;
+      }
+    }
+  }
   try {
     const { stdout } = await powershell('send-ctrl-c.ps1', ['-ProcessId', String(pid)]);
     return stdout.includes('sent');
@@ -147,6 +205,16 @@ export function sendPipeCommand(pipe: string, token: string, command: string): P
 }
 
 export async function forceKill(pid: number): Promise<void> {
+  if (isLinux) {
+    try {
+      process.kill(-pid, 'SIGKILL');
+    } catch {
+      try {
+        process.kill(pid, 'SIGKILL');
+      } catch {}
+    }
+    return;
+  }
   try {
     await execFileAsync('taskkill.exe', ['/PID', String(pid), '/T', '/F'], { windowsHide: true });
   } catch {}

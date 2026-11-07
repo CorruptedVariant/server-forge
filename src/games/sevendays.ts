@@ -5,12 +5,13 @@
 // Its telnet console (on this system only: no telnet password) is used for console commands, chat warnings before
 // restarts, player actions, and a clean stop ("shutdown" saves the world first).
 import { existsSync, readFileSync, writeFileSync, copyFileSync, mkdirSync } from 'node:fs';
+import { bin, isLinux } from '../platform/host.ts';
 import net from 'node:net';
 import path from 'node:path';
 import type { GameModule, LogParser, LogState, ServerRecord, Settings } from './types.ts';
 import { STEAM_APPS, num, bool, text, steamInstall } from './steam-games.ts';
 
-const EXE = '7DaysToDieServer.exe';
+const EXE = bin('7DaysToDieServer.exe', '7DaysToDieServer.x86_64');
 const CONFIG = 'tavernhost-serverconfig.xml';
 const WORLDS = [
   { value: 'Navezgane', label: 'Navezgane (the hand-made map)' },
@@ -221,7 +222,7 @@ export const sevenDays: GameModule = {
     // ignored by current versions).
     args: ['-logfile', path.join(record.installDir, 'tavernhost-server.log'), '-quit', '-batchmode', '-nographics', `-configfile=${CONFIG}`, `-UserDataFolder=${path.join(record.installDir, 'UserData')}`, '-dedicated'],
     cwd: record.installDir,
-    env: { SteamAppId: '251570', SteamGameId: '251570' },
+    env: { SteamAppId: '251570', SteamGameId: '251570', ...(isLinux ? { LD_LIBRARY_PATH: '.' } : {}) },
   }),
 
   gameLog: (record) => path.join(record.installDir, 'tavernhost-server.log'),

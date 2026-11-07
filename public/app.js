@@ -17,6 +17,13 @@ const state = {
 // ---------- helpers ----------
 
 async function api(method, url, body) {
+  // Mod installs that download on the server show in the progress panel for as long as they run.
+  const install = method === 'POST' ? MOD_INSTALL.exec(url) : null;
+  if (install) return watchModInstall(decodeURIComponent(install[1]), () => apiCall(method, url, body));
+  return apiCall(method, url, body);
+}
+
+async function apiCall(method, url, body) {
   const res = await fetch(url, {
     method,
     headers: { 'Content-Type': 'application/json', 'X-Panel': '1' },
@@ -26,6 +33,102 @@ async function api(method, url, body) {
   if (!res.ok) throw Object.assign(new Error(data.error || `Request failed (${res.status})`), { status: res.status });
   return data;
 }
+
+// ---------- mod downloads panel ----------
+// Rows: installs started from this page (asking the server what it's downloading while they run), and what the desktop
+// app reports from its mod browser window.
+const MOD_INSTALL = /^\/api\/servers\/([^/]+)\/(?:addons|plugins)\/(?:curseforge|by-id|nexus|hexium|setup|[^/]+\/(?:update|curseforge))$/;
+const pageInstalls = new Map();
+let serverDownloads = [];
+let appDownloads = [];
+let downloadPoll = null;
+
+async function pollServerDownloads() {
+  const found = [];
+  for (const server of new Set([...pageInstalls.values()].filter((i) => i.state === 'installing').map((i) => i.server))) {
+    const r = await apiCall('GET', `/api/servers/${encodeURIComponent(server)}/mod-downloads`).catch(() => null); // a node on an older version
+    if (r) found.push(...r.downloads.filter((d) => d.state === 'downloading'));
+  }
+  serverDownloads = found;
+  renderDownloads();
+}
+
+async function watchModInstall(server, run) {
+  const id = `i${Date.now()}${Math.random()}`;
+  pageInstalls.set(id, { id, server, name: 'Mod install', state: 'installing' });
+  renderDownloads();
+  downloadPoll ??= setInterval(pollServerDownloads, 700);
+  const finish = (patch, keepMs) => {
+    pageInstalls.set(id, { ...pageInstalls.get(id), ...patch });
+    if (![...pageInstalls.values()].some((i) => i.state === 'installing')) {
+      clearInterval(downloadPoll);
+      downloadPoll = null;
+      serverDownloads = [];
+    }
+    renderDownloads();
+    setTimeout(() => {
+      pageInstalls.delete(id);
+      renderDownloads();
+    }, keepMs);
+  };
+  try {
+    const out = await run();
+    finish({ state: 'done' }, 4000);
+    return out;
+  } catch (err) {
+    finish({ state: 'failed', note: err.message }, 15_000);
+    throw err;
+  }
+}
+
+function renderDownloads() {
+  const tray = $('downloadTray');
+  if (!tray) return;
+  // While the server is fetching a file, its row says more than the install's own row does.
+  const installs = [...pageInstalls.values()].filter((i) => i.state !== 'installing' || !serverDownloads.length);
+  const rows = [...appDownloads, ...serverDownloads, ...installs];
+  tray.hidden = !rows.length;
+  tray.textContent = '';
+  if (!rows.length) return;
+  tray.appendChild(el('h4', null, 'Mod downloads'));
+  const mb = (n) => (n / 1048576).toFixed(n < 104857600 ? 1 : 0);
+  for (const d of rows) {
+    const row = el('div', `download-row ${d.state}`);
+    const top = el('div', 'download-top');
+    const name = el('span', 'download-name', d.name);
+    name.title = d.name;
+    top.appendChild(name);
+    if (d.canCancel) {
+      const cancel = el('button', 'small ghost', 'Cancel');
+      cancel.addEventListener('click', () => window.desktop?.cancelDownload?.(d.id));
+      top.appendChild(cancel);
+    } else if (d.state === 'failed' && appDownloads.includes(d)) {
+      const dismiss = el('button', 'small ghost', 'Dismiss');
+      dismiss.addEventListener('click', () => window.desktop?.dismissDownload?.(d.id));
+      top.appendChild(dismiss);
+    }
+    row.appendChild(top);
+    if (d.state === 'downloading' || d.state === 'installing') {
+      const known = d.state === 'downloading' && d.total > 0;
+      const bar = el('div', `download-bar${known ? '' : ' busy'}`);
+      const fill = el('i');
+      if (known) fill.style.width = `${Math.min(100, (d.received / d.total) * 100)}%`;
+      bar.appendChild(fill);
+      row.appendChild(bar);
+    }
+    const note =
+      d.state === 'downloading' ? (d.total ? `${Math.floor((d.received / d.total) * 100)}%  ·  ${mb(d.received)} of ${mb(d.total)} MB` : d.received ? `${mb(d.received)} MB so far` : 'Downloading…')
+      : d.state === 'waiting' ? 'Downloaded. Confirm the install in the browser window.'
+      : d.state === 'installing' ? d.note || 'Downloading, checking and installing…'
+      : d.state === 'done' ? 'Installed' : d.note || 'Failed';
+    row.appendChild(el('div', 'download-note', note));
+    tray.appendChild(row);
+  }
+}
+window.desktop?.onDownloads?.((list) => {
+  appDownloads = list;
+  renderDownloads();
+});
 
 let toastTimer;
 function toast(msg, isErr = false) {
@@ -166,12 +269,15 @@ async function refreshPanelName() {
   } catch {}
 }
 
-/** Labels the panel as the release build or the development (test) build, so the two can't be confused. */
+/** Labels the development (test) build so it can't be confused with the installed one. Every build is on the beta
+ *  channel until 1.0.0, so there's no Release pill yet. */
 function showBuild(build) {
   const dev = build === 'development';
-  const badge = el('span', `build-badge ${dev ? 'dev' : 'release'}`, dev ? 'Development' : 'Release');
-  badge.title = dev ? 'Test panel running from the source code. Not for live servers.' : 'Installed release version';
-  $('appVersion').appendChild(badge);
+  if (dev) {
+    const badge = el('span', 'build-badge dev', 'Development');
+    badge.title = 'Test panel running from the source code. Not for live servers.';
+    $('appVersion').appendChild(badge);
+  }
   const beta = el('span', 'build-badge beta', 'Beta');
   beta.title = 'Server Forge is in beta: it is actively being worked on and updates are frequent.';
   $('appVersion').appendChild(beta);
@@ -196,7 +302,15 @@ async function boot() {
   state.version = me.version;
   state.updatedFrom = me.updatedFrom;
   // Where new servers go by default (the development panel keeps its own folder).
-  state.serverRoot = me.build === 'development' ? 'C:\\GameServers\\Dev' : 'C:\\GameServers';
+  state.platform = me.platform;
+  if (me.platform === 'linux') {
+    $('btnFirewall').textContent = 'Allow through the firewall…';
+    $('btnFirewall').nextElementSibling.textContent = 'Only if this system runs a firewall (ufw or firewalld); it asks for admin permission. Needed once so other devices can connect.';
+    $('browseNative').textContent = 'System folder picker…';
+    $('newFolder').placeholder = `${me.serverRoot}/My Valheim server`;
+    $('addInstall').placeholder = `${me.serverRoot}/My server`;
+  }
+  state.serverRoot = me.serverRoot ?? (me.build === 'development' ? 'C:\\GameServers\\Dev' : 'C:\\GameServers');
   if (me.needsSetup) return show('viewSetup');
   if (!me.user) return show('viewLogin');
   await enterApp(me.user);
@@ -254,12 +368,14 @@ async function enterApp(user) {
   connectEvents();
   loadAlerts();
   // The rename and release notes share one notice; later versions use normal notes.
-  void showRebrandAnnouncement({
+  // Linux installs are all newer than the rename, so there's no old name to explain.
+  const announce = state.platform === 'linux' ? async () => false : showRebrandAnnouncement;
+  void announce({
     version: state.version,
     development: state.build === 'development',
     loadNotes: version => api('GET', `/api/changelog?version=${encodeURIComponent(version)}`),
     renderNotes,
-  }).then(shown => { if (!shown) showWhatsNew(); });
+  }).then(shown => { if (!shown) showWhatsNew(); }).then(showChannelNotice);
   if (hasGlobal('panel.settings')) {
     loadAppUpdate(false);
     // The service checks GitHub every 6 hours; asking it hourly just picks that up.
@@ -1448,7 +1564,7 @@ async function renderResources() {
   // CPU
   $('resCpu').textContent = on ? `${st.cpu.toFixed(1)}%` : '–';
   setBar($('resCpuBar'), on ? st.cpu / 100 : 0);
-  $('resCpuSub').textContent = `Share of the whole system (${st.cores} logical cores), like Task Manager.${st.range > 3600 ? ' Longer ranges show 1-minute averages.' : ''}`;
+  $('resCpuSub').textContent = `Share of the whole system (${st.cores} logical cores).${st.range > 3600 ? ' Longer ranges show 1-minute averages.' : ''}`;
   graph('resCpuGraph', 'cpu', Math.max(10, ...hist.map((h) => h.cpu)));
 
   // RAM
@@ -2369,7 +2485,7 @@ $('btnClone').addEventListener('click', () => {
   $('cloneSource').textContent = `"${d.name}"`;
   $('cloneName').value = `${d.name} (test copy)`.slice(0, 60);
   const parent = d.installDir.replace(/[\\/][^\\/]+$/, '');
-  $('cloneFolder').value = `${parent}\\${slug(`${d.name} test copy`)}`;
+  $('cloneFolder').value = joinPath(parent, slug(`${d.name} test copy`));
   $('cloneError').textContent = '';
   $('cloneDialog').showModal();
 });
@@ -2385,7 +2501,7 @@ $('cloneForm').addEventListener('submit', async (e) => {
   }
 });
 
-// Delete: remove from the panel, optionally sending the folder and/or backups to the Recycle Bin.
+// Delete: remove from the panel, optionally sending the folder and/or backups to the Recycle Bin (Trash on Linux).
 function updateDeleteDialog() {
   const files = $('delFiles').checked;
   const backups = $('delBackups').checked;
@@ -2417,11 +2533,11 @@ $('deleteForm').addEventListener('submit', async (e) => {
   const files = $('delFiles').checked;
   const backups = $('delBackups').checked;
   $('delSubmit').disabled = true;
-  $('deleteError').textContent = files ? 'Deleting… (moving files to the Recycle Bin can take a while)' : '';
+  $('deleteError').textContent = files ? 'Deleting… (moving files to the Recycle Bin or Trash can take a while)' : '';
   try {
     await api('DELETE', `/api/servers/${state.selected}?files=${files ? 1 : 0}&backups=${backups ? 1 : 0}`);
     $('deleteDialog').close();
-    toast(files ? 'Server deleted (files are in the Recycle Bin)' : 'Server removed');
+    toast(files ? 'Server deleted (files are in the Recycle Bin or Trash)' : 'Server removed');
   } catch (err) {
     $('deleteError').textContent = err.message;
     updateDeleteDialog();
@@ -2544,8 +2660,9 @@ function renderBrowser() {
   for (const entry of browser.entries) list.appendChild(browseRow(entry));
 }
 
+/** A path on the server's system: its paths say which kind it is ("/" on Linux, "\\" on Windows). */
 function joinPath(dir, name) {
-  return dir ? `${dir.replace(/[\\/]+$/, '')}\\${name}` : name;
+  return dir ? `${dir.replace(/[\\/]+$/, '')}${dir.startsWith('/') ? '/' : '\\'}${name}` : name;
 }
 
 function browseRow(entry) {
@@ -2567,7 +2684,7 @@ function browseRow(entry) {
     del.addEventListener('click', async (e) => {
       e.stopPropagation();
       const what = entry.type === 'dir' ? `the folder "${entry.name}" and everything in it` : `"${entry.name}"`;
-      if (!await confirmBox(`Delete ${what}?\n\nIt goes to the Recycle Bin (on network drives it is deleted permanently).`)) return;
+      if (!await confirmBox(`Delete ${what}?\n\nIt goes to the Recycle Bin or Trash (on network and other drives it may be deleted permanently).`)) return;
       try {
         await api('POST', '/api/files/delete', { path: full });
         toast('Deleted');
@@ -3240,7 +3357,7 @@ function serverFileRow(entry) {
   del.addEventListener('click', async (e) => {
     e.stopPropagation();
     const what = entry.type === 'dir' ? `the folder "${entry.name}" and everything in it` : `"${entry.name}"`;
-    if (!await confirmBox(`Delete ${what}?\n\nIt goes to the Recycle Bin (on network drives it is deleted permanently).`)) return;
+    if (!await confirmBox(`Delete ${what}?\n\nIt goes to the Recycle Bin or Trash (on network and other drives it may be deleted permanently).`)) return;
     try {
       await api('POST', `/api/servers/${state.selected}/files/delete`, { path: rel });
       toast('Deleted');
@@ -3301,7 +3418,7 @@ $('sfNewFolder').addEventListener('click', () => sfNewEntry(false));
 $('sfNewFile').addEventListener('click', () => sfNewEntry(true));
 $('sfExplorer').addEventListener('click', () => {
   const base = state.detail.installDir.replace(/[\\/]+$/, '');
-  window.desktop?.openFolder?.(sf.path ? `${base}\\${sf.path.replaceAll('/', '\\')}` : base);
+  window.desktop?.openFolder?.(sf.path ? joinPath(base, base.startsWith('/') ? sf.path : sf.path.replaceAll('/', '\\')) : base);
 });
 $('sfUpload').addEventListener('change', () => {
   sfUploadFiles([...$('sfUpload').files]);
@@ -3566,7 +3683,9 @@ function renderGamePicks() {
     b.type = 'button';
     b.appendChild(serverIcon({ game: g.id, settings: { flavor: 'vanilla' } }, 'srv-icon pick'));
     const text = el('span', 'game-pick-text');
-    text.append(el('b', null, g.name), el('span', 'muted small-text', GAME_BLURBS[g.id] ?? ''));
+    // A Linux system downloads Factorio's free headless server, with no factorio.com login.
+    const blurb = g.id === 'factorio' && g.serverRoot?.startsWith('/') ? 'Build and automate factories, with or without Space Age. Free Linux server; mods from the mod portal need your factorio.com login.' : GAME_BLURBS[g.id] ?? '';
+    text.append(el('b', null, g.name), el('span', 'muted small-text', `${blurb}${g.needsWine ? ' Runs through Wine on this system.' : ''}`));
     b.appendChild(text);
     b.addEventListener('click', () => {
       if ($('newGame').value === g.id) return;
@@ -3588,7 +3707,7 @@ function resetNewGames() {
   renderGamePicks();
   renderNewFields();
 }
-const serverRoot = () => (newTarget ? 'C:\\GameServers' : (state.serverRoot ?? 'C:\\GameServers'));
+const serverRoot = () => (newTarget ? (dialogGames()[0]?.serverRoot ?? 'C:\\GameServers') : (state.serverRoot ?? 'C:\\GameServers'));
 
 $('btnNewServer').addEventListener('click', async () => {
   $('newForm').reset();
@@ -3603,11 +3722,11 @@ $('newSystem').addEventListener('change', async () => {
   await useSystem($('newSystem').value);
   $('newSystem').value = newTarget;
   resetNewGames();
-  if (!newFolderTouched) $('newFolder').value = $('newName').value.trim() ? `${serverRoot()}\\${slug($('newName').value)}` : '';
+  if (!newFolderTouched) $('newFolder').value = $('newName').value.trim() ? joinPath(serverRoot(), slug($('newName').value)) : '';
 });
 $('newGame').addEventListener('change', renderNewFields);
 $('newName').addEventListener('input', () => {
-  if (!newFolderTouched) $('newFolder').value = $('newName').value.trim() ? `${serverRoot()}\\${slug($('newName').value)}` : '';
+  if (!newFolderTouched) $('newFolder').value = $('newName').value.trim() ? joinPath(serverRoot(), slug($('newName').value)) : '';
   const serverName = $('nf_serverName') ?? $('nf_prop:server-name');
   if (serverName && !serverName.dataset.touched) serverName.value = $('newName').value;
 });
@@ -3777,7 +3896,7 @@ $('btnRemoteSave').addEventListener('click', async () => {
 
 $('btnFirewall').addEventListener('click', async () => {
   try {
-    toast('Approve the Windows admin prompt…');
+    toast(state.platform === 'linux' ? 'Approve the admin prompt if one appears…' : 'Approve the Windows admin prompt…');
     await api('POST', '/api/settings/remote/firewall');
     toast('Firewall rule added');
   } catch (err) {
@@ -4028,10 +4147,10 @@ async function loadWorlds(data) {
     if (!w.active && hasPerm('files.edit')) {
       const del = el('button', 'small red ghost', 'Delete');
       del.addEventListener('click', async () => {
-        if (!await confirmBox(`Delete the world "${w.name}"? It goes to the Recycle Bin.`)) return;
+        if (!await confirmBox(`Delete the world "${w.name}"? It goes to the Recycle Bin or Trash.`)) return;
         try {
           loadWorlds(await api('DELETE', `/api/servers/${id}/worlds/${encodeURIComponent(w.folder)}`));
-          toast('World moved to the Recycle Bin');
+          toast('World moved to the Recycle Bin or Trash');
         } catch (err) {
           toast(err.message, true);
         }
@@ -4312,6 +4431,26 @@ async function showWhatsNew() {
   $('whatsNewDialog').showModal();
 }
 $('whatsNewClose').addEventListener('click', () => $('whatsNewDialog').close());
+
+/** Once per device: explains why the Release pill went away. Only for copies that were updated from a version that
+ *  still had it (0.9.6 or older) and the dev build; fresh installs never saw it. */
+async function showChannelNotice() {
+  const KEY = 'th-seen-channel-notice';
+  const from = state.updatedFrom?.from;
+  if (state.build !== 'development' && !(from && !versionNewer(from, '0.9.6'))) return;
+  try {
+    if (localStorage.getItem(KEY)) return;
+  } catch {
+    return;
+  }
+  // After the update notes (or the rename notice) are closed, so it never opens on top of them.
+  while (document.querySelector('dialog[open]')) await new Promise((r) => setTimeout(r, 500));
+  try {
+    localStorage.setItem(KEY, '1');
+  } catch {}
+  $('channelNoticeDialog').showModal();
+}
+$('channelNoticeClose').addEventListener('click', () => $('channelNoticeDialog').close());
 
 // ---------- About / Help ----------
 
@@ -4972,6 +5111,7 @@ const API_DOCS = [
     ['POST', '/api/servers/{id}/addons/check-updates', 'Newer versions available (Valheim: Thunderstore/Hexium; Bedrock: CurseForge, for linked addons)', 'See the server'],
     ['POST', '/api/servers/{id}/addons/{item}/update', 'Update one (Valheim; Bedrock: installs the newest CurseForge file on the chosen channel)', 'Manage mods / plugins / addons'],
     ['POST', '/api/servers/{id}/addons/{item}/curseforge', 'Bedrock: link an addon to a CurseForge project for updates: {"projectId":123}, or {"projectId":null} to unlink', 'Manage mods / plugins / addons'],
+    ['POST', '/api/servers/{id}/steam-login', 'Open SteamCMD on the server\'s PC to sign in for Workshop downloads: {"username":"..."} (owner only). Then POST /steam-login/confirm with the same body; DELETE /steam-login signs out', 'Owner'],
     ['POST', '/api/servers/{id}/addons/by-id', 'Add a mod by ID or link (Space Engineers: Steam Workshop): {"input":"https://steamcommunity.com/sharedfiles/filedetails/?id=…"}', 'Manage mods / plugins / addons'],
     ['GET', '/api/servers/{id}/addons/update-settings', 'Bedrock addon updates: {channel: "release"|"beta"|"alpha", auto}', 'See the server'],
     ['PUT', '/api/servers/{id}/addons/update-settings', 'Change them: {"channel":"beta","auto":true} (beta/alpha files only count when newer than the newest release)', 'Manage mods / plugins / addons'],
@@ -5487,6 +5627,7 @@ async function loadAddons() {
   // as it when files can be added too (Factorio: mod portal name/link, or a mod zip).
   $('addonDrop').hidden = !!addonState.readOnly || (!!addonState.canAddById && !addonState.accept);
   $('addonByIdForm').hidden = !addonState.canAddById;
+  renderWorkshop();
   $('addonByIdInput').placeholder = addonState.byIdPlaceholder ?? 'Steam Workshop link or ID, e.g. https://steamcommunity.com/sharedfiles/filedetails/?id=123456789';
   $('addonAddHelp').innerHTML = L.dropHelp; // fixed text from Server Forge itself
   // Bedrock also takes unpacked pack folders.
@@ -5510,7 +5651,8 @@ async function loadAddons() {
   if (addonState.share && !addonState.moddingOff) loadShare();
   // Vanilla (modding off): only the "Turn on modding" bar is shown.
   const off = !!addonState.moddingOff;
-  for (const id of ['addonAddTitle', 'addonAddHelp', 'addonDrop', 'addonInstalledCard']) $(id).hidden = off;
+  for (const id of ['addonAddTitle', 'addonAddHelp', 'addonInstalledCard']) $(id).hidden = off;
+  if (off) $('addonDrop').hidden = true;
   if (off) $('addonSitesCard').hidden = true;
   // Nexus Mods (Valheim): paste a link; the server downloads it with the Nexus API key.
   $('nexusCard').hidden = off || state.detail.game !== 'valheim';
@@ -5605,6 +5747,68 @@ function renderAddonStatus() {
 }
 
 let addonUpdates = {};
+
+/** The Mods tab's Steam Workshop section: sign-in (where Server Forge does the downloading) and browsing. */
+function renderWorkshop() {
+  const w = addonState.workshop;
+  $('addonWorkshop').hidden = !w || !!addonState.moddingOff;
+  if (!w) return;
+  const ready = !w.needsLogin || !!w.account;
+  const inApp = !!window.desktop?.browseAddons;
+  $('addonByIdForm').hidden = !addonState.canAddById || !ready;
+  $('btnBrowseWorkshop').hidden = !ready;
+  $('steamLoginForm').hidden = ready || !w.canSignIn;
+  $('btnSteamConfirm').hidden = ready || !steamLoginPending;
+  $('btnSteamSignOut').hidden = !w.needsLogin || !w.account || !w.canSignIn;
+  const how = inApp ? 'Browse, open a mod, and press the blue Install button on its page, or paste its link below.' : 'Browse, open a mod, copy its link and paste it below.';
+  if (!w.needsLogin) $('addonWorkshopStatus').textContent = `${how} No Steam sign-in is needed: this game's server downloads its own mods.`;
+  else if (w.account) $('addonWorkshopStatus').textContent = `Signed in on this server's PC as ${w.account}. ${how}`;
+  else if (steamLoginPending) $('addonWorkshopStatus').textContent = "A SteamCMD window opened on this server's PC. Type your password and Steam Guard code there (Server Forge never sees them), then close it and press I've signed in.";
+  else if (w.canSignIn) $('addonWorkshopStatus').textContent = "Downloading Workshop mods needs a Steam account that owns this game. You sign in on this server's PC, in SteamCMD's own window.";
+  else $('addonWorkshopStatus').textContent = "Downloading Workshop mods needs a Steam account that owns this game. Only the owner can sign in.";
+}
+
+let steamLoginPending = false;
+
+$('steamLoginForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  try {
+    await api('POST', `/api/servers/${state.selected}/steam-login`, { username: $('steamLoginUser').value.trim() });
+    steamLoginPending = true;
+    renderWorkshop();
+  } catch (err) {
+    toast(err.message, true);
+  }
+});
+
+$('btnSteamConfirm').addEventListener('click', async () => {
+  const btn = $('btnSteamConfirm');
+  btn.disabled = true;
+  try {
+    await api('POST', `/api/servers/${state.selected}/steam-login/confirm`, { username: $('steamLoginUser').value.trim() });
+    steamLoginPending = false;
+    await loadAddons();
+  } catch (err) {
+    toast(err.message, true);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$('btnSteamSignOut').addEventListener('click', async () => {
+  try {
+    await api('DELETE', `/api/servers/${state.selected}/steam-login`);
+    await loadAddons();
+  } catch (err) {
+    toast(err.message, true);
+  }
+});
+
+$('btnBrowseWorkshop').addEventListener('click', () => {
+  const url = addonState.workshop.url;
+  if (window.desktop?.browseAddons) window.desktop.browseAddons({ url, serverId: state.selected, serverName: state.detail.name, accept: '', kind: addonKind, workshop: true });
+  else window.open(url, '_blank', 'noopener');
+});
 
 $('addonByIdForm').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -5858,14 +6062,14 @@ function renderShare(info) {
     row.append(code, copy);
     body.appendChild(row);
   };
-  body.appendChild(el('p', 'small-text', 'Players on your network (same house/LAN):'));
-  info.links.forEach(addLink);
   if (info.publicLink) {
     body.appendChild(el('p', 'small-text', `Players anywhere else (forward TCP port ${info.remote.port} on your router to this system first):`));
     addLink(info.publicLink);
   } else {
     body.appendChild(el('p', 'muted small-text', `Players outside your network: forward TCP port ${info.remote.port} on your router and give them the link with your public IP instead of the local address.`));
   }
+  body.appendChild(el('p', 'small-text', 'Players on your network (same house/LAN):'));
+  info.links.forEach(addLink);
   const regen = el('button', 'small ghost', 'Make a new link (the old one stops working)');
   regen.addEventListener('click', async () => {
     if (!await confirmBox('Make a new link? Players using the old one will have to paste the new one.')) return;
@@ -5919,7 +6123,7 @@ const locationLabel = (value) => addonState.locations?.options.find((o) => o.val
 
 // Downloads from the desktop addon browser report back here.
 window.desktop?.onAddonDownload?.((info) => {
-  if (info.status === 'downloading') return toast(`Downloading ${info.filename}…`);
+  if (info.status === 'downloading') return;
   const here = info.serverId === state.selected && state.tab === (info.kind ?? 'addons');
   if (info.status === 'installed') {
     toast(`Installed ${info.filename}`);

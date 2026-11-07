@@ -11,10 +11,12 @@
 // own mods added here are listed there too, so they follow the game if its mod folder changes. Steam's own Workshop
 // mods can be switched on and off, never deleted (Steam would only put them back).
 import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync, cpSync, readdirSync, renameSync, statSync } from 'node:fs';
+import { isLinux } from '../platform/host.ts';
+import { unzipFile } from '../platform/archive.ts';
 import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
-import { defenderScan, type ScanResult } from '../modscan.ts';
+import { defenderScan, type ScanResult, SCANNER, noScannerIsNormal } from '../modscan.ts';
 import { pinnedGet, steamPath, type Link, type AnyManifest } from './sync.ts';
 import { findPackages, infoProblem, isUe4ssDep, palSide, readInfo, UE4SS_URL, wrapLegacyPaks, wrapLuaMods, wrapUe4ss, type PalInfo } from './palworld-pkg.ts';
 
@@ -62,7 +64,7 @@ export function findPalworld(): string | null {
     const vdf = path.join(steam, 'steamapps', 'libraryfolders.vdf');
     if (existsSync(vdf)) for (const m of readFileSync(vdf, 'utf-8').matchAll(/"path"\s+"([^"]+)"/g)) libraries.add(m[1].replace(/\\\\/g, '\\'));
   }
-  for (const drive of ['C', 'D', 'E', 'F']) libraries.add(`${drive}:\\Program Files (x86)\\Steam`), libraries.add(`${drive}:\\SteamLibrary`);
+  if (process.platform !== 'linux') for (const drive of ['C', 'D', 'E', 'F']) libraries.add(`${drive}:\\Program Files (x86)\\Steam`), libraries.add(`${drive}:\\SteamLibrary`);
   for (const lib of libraries) {
     const acf = path.join(lib, 'steamapps', `appmanifest_${PALWORLD_APP_ID}.acf`);
     const installdir = existsSync(acf) ? (/"installdir"\s+"([^"]+)"/.exec(readFileSync(acf, 'utf-8'))?.[1] ?? 'Palworld') : 'Palworld';
@@ -112,10 +114,17 @@ function writeModSettings(gameDir: string, s: ModSettings) {
   writeFileSync(settingsFile(gameDir), `${lines.join('\r\n')}\r\n`);
 }
 
+/** Palworld runs through Proton on Linux, so its settings file has Windows paths: Z:\ is the Linux file system. */
+function nativePath(p: string) {
+  if (process.platform !== 'linux') return p;
+  const z = /^Z:[\\/](.*)$/i.exec(p);
+  return z ? `/${z[1].replace(/\\/g, '/')}` : p.replace(/\\/g, '/');
+}
+
 /** Where the game reads mods from right now. */
 export function modRoot(gameDir: string): string {
   const s = readModSettings(gameDir);
-  return s.workshopRoot ? path.resolve(gameDir, s.workshopRoot) : path.join(gameDir, 'Mods', 'Workshop');
+  return s.workshopRoot ? path.resolve(gameDir, nativePath(s.workshopRoot)) : path.join(gameDir, 'Mods', 'Workshop');
 }
 
 /** The same fixed number Server Forge uses for a mod without a Workshop ID (far below Palworld's real Workshop IDs). */
@@ -225,6 +234,7 @@ export interface PalPrepared {
 }
 
 function unzip(zip: string, dest: string): Promise<void> {
+  if (isLinux) return unzipFile(zip, dest).catch(() => Promise.reject(new Error("it couldn't be unzipped")));
   return new Promise((resolve, reject) => {
     execFile(
       'powershell.exe',
@@ -259,10 +269,10 @@ export async function preparePal(gameDir: string, m: PalManifest, link: Link, wo
       log(`Checking ${mod.name}…`);
       const def = await defenderScan(zip);
       const flags: ScanResult['flags'] = [];
-      if (def.result === 'threat') flags.push({ level: 'high', text: `Windows Defender found ${def.threat}` } as ScanResult['flags'][number]);
-      else if (def.result !== 'clean') flags.push({ level: 'medium', text: "Windows Defender couldn't scan it (another antivirus may be in charge)" } as ScanResult['flags'][number]);
+      if (def.result === 'threat') flags.push({ level: 'high', text: `${SCANNER} found ${def.threat}` } as ScanResult['flags'][number]);
+      else if (def.result !== 'clean' && !noScannerIsNormal) flags.push({ level: 'medium', text: "Windows Defender couldn't scan it (another antivirus may be in charge)" } as ScanResult['flags'][number]);
       const verdict: ScanResult['verdict'] = def.result === 'threat' ? 'blocked' : def.result === 'clean' ? 'clean' : 'review';
-      const summary = def.result === 'threat' ? `blocked: Windows Defender found ${def.threat}` : `${def.result === 'clean' ? 'Windows Defender: clean' : "Windows Defender couldn't scan it"} · sent by the server owner`;
+      const summary = def.result === 'threat' ? `blocked: ${SCANNER} found ${def.threat}` : `${noScannerIsNormal && def.result !== 'clean' ? 'No virus scanner on this system' : def.result === 'clean' ? `${SCANNER}: clean` : "Windows Defender couldn't scan it"} · sent by the server owner`;
       out.changes.push({
         key: `pal:${mod.id}@${mod.stamp}`,
         mod,

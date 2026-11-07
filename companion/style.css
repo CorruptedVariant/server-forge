@@ -187,3 +187,17 @@ body.starvalor-mode .achilles-frame { flex: 1; height: auto; border: none; borde
 #toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%) translateY(20px); opacity: 0; pointer-events: none; background: var(--panel-2); border: 1px solid var(--border); padding: 10px 16px; border-radius: 10px; transition: .2s; max-width: 80vw; }
 #toast.show { opacity: 1; transform: translateX(-50%); }
 #toast.bad { border-color: #b91c1c; color: #fca5a5; }
+
+/* Mod downloads panel */
+#downloadTray { position: fixed; right: 16px; bottom: 16px; width: 340px; max-height: 50vh; overflow-y: auto; z-index: 50; padding: 10px 12px; background: #171b22; border: 1px solid #2d3440; border-radius: 10px; box-shadow: 0 6px 24px #0008; font-size: 13px; }
+#downloadTray[hidden] { display: none; }
+#downloadTray h4 { margin: 0 0 6px; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; opacity: .65; }
+.download-row { padding: 6px 0; }
+.download-top { display: flex; gap: 8px; align-items: center; }
+.download-name { flex: 1; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.download-bar { height: 6px; margin: 6px 0 4px; border-radius: 3px; background: #2a303b; overflow: hidden; }
+.download-bar i { display: block; height: 100%; background: #3b82f6; }
+.download-bar.busy i { width: 100%; opacity: .45; }
+.download-note { font-size: 12px; opacity: .75; }
+.download-row.failed .download-note { color: #fca5a5; opacity: 1; }
+.download-row.done .download-note { color: #4ade80; opacity: 1; }

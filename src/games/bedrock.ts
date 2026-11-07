@@ -1,5 +1,6 @@
 // Minecraft Bedrock Dedicated Server (BDS).
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, cpSync, rmSync } from 'node:fs';
+import { bin, isLinux } from '../platform/host.ts';
 import path from 'node:path';
 import os from 'node:os';
 import type { GameModule, LogParser, LogState, Player, PropertyEntry, ServerRecord, Settings, SettingField } from './types.ts';
@@ -13,7 +14,7 @@ import { checkPackUpdates, installPackUpdate } from './bedrock-updates.ts';
 import { diagnoseBedrock, missingVcDlls } from './bedrock-diagnose.ts';
 import { isEndstone, setupEndstone, endstoneLaunch, endstonePlugins, installedEndstone, endstoneBedrockVersion, envPython, recordBedrockVersion, importEndstone } from './endstone.ts';
 
-const EXE = 'bedrock_server.exe';
+const EXE = bin('bedrock_server.exe', 'bedrock_server');
 const LINKS_API = 'https://net-secondary.web.minecraft-services.net/api/v1.0/download/links';
 const VERSION_FILE = '.tavernhost-version';
 // The server's own settings and data: never overwritten by an update if they already exist.
@@ -122,9 +123,9 @@ export async function latestDownload(): Promise<{ url: string; version: string }
   const res = await fetch(LINKS_API, { headers: { 'User-Agent': 'TavernHost' } });
   if (!res.ok) throw new Error(`Couldn't reach Mojang's download service (HTTP ${res.status}).`);
   const data = (await res.json()) as { result?: { links?: { downloadType: string; downloadUrl: string }[] } };
-  const url = data.result?.links?.find((l) => l.downloadType === 'serverBedrockWindows')?.downloadUrl;
+  const url = data.result?.links?.find((l) => l.downloadType === (isLinux ? 'serverBedrockLinux' : 'serverBedrockWindows'))?.downloadUrl;
   const version = url && /bedrock-server-([\d.]+)\.zip/.exec(url)?.[1];
-  if (!url || !version) throw new Error("Mojang's download service didn't list a Windows Bedrock server.");
+  if (!url || !version) throw new Error(`Mojang's download service didn't list a ${isLinux ? 'Linux' : 'Windows'} Bedrock server.`);
   return { url, version };
 }
 
@@ -178,11 +179,12 @@ const softwareField: SettingField = {
   type: 'select',
   options: [
     { value: 'vanilla', label: 'Vanilla (Mojang)', help: "Mojang's Bedrock Dedicated Server. Addons only." },
-    {
+    // Endstone's setup here is written for Windows; not offered on Linux yet.
+    ...(isLinux ? [] : [{
       value: 'endstone',
       label: 'Endstone (plugins)',
       help: 'Endstone runs the Bedrock server with plugin support (Python and C++ plugins) and still loads addons. Server Forge downloads Python and Endstone itself. Endstone supports one Bedrock version at a time, so new Bedrock versions arrive with Endstone updates, usually a few days after Mojang releases them.',
-    },
+    }]),
   ],
   help: 'Switching takes effect at the next start (Server Forge sets Endstone up then). Worlds, settings and addons are kept.',
   restart: true,
@@ -254,7 +256,7 @@ export const bedrock: GameModule = {
 
   launch(record) {
     if (isEndstone(record)) return endstoneLaunch(record);
-    return { exe: path.join(record.installDir, EXE), args: [], cwd: record.installDir };
+    return { exe: path.join(record.installDir, EXE), args: [], cwd: record.installDir, ...(isLinux ? { env: { LD_LIBRARY_PATH: '.' } } : {}) };
   },
 
   // Endstone servers: set Endstone up the first time (also after switching an existing server to Endstone).
@@ -264,6 +266,7 @@ export const bedrock: GameModule = {
     if (missing.length) {
       throw new Error(`This system is missing the Microsoft Visual C++ runtime the Bedrock server needs (${missing.join(', ')}). Use "Install Visual C++ runtime" on the Overview tab, then start again.`);
     }
+    if (isLinux && isEndstone(record)) throw new Error("Endstone isn't supported on Linux in Server Forge yet. Set Server software to Vanilla in Settings.");
     if (!isEndstone(record) || (existsSync(envPython(record.installDir)) && installedEndstone(record.installDir))) return;
     note('Setting up Endstone (first start only): Python, Endstone and the Bedrock version it supports…');
     const r = await setupEndstone(record.installDir, { update: () => {}, line: note }, { vanillaVersion: installedVersion(record.installDir) });

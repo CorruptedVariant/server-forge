@@ -130,6 +130,8 @@ export interface AddonSupport {
   readOnly?: boolean;
   /** Adds an item by ID or link instead of a file (Space Engineers: Steam Workshop). Shows an input box on the Mods tab. */
   addById?(record: ServerRecord, input: string): Promise<{ installed: unknown[]; warnings: string[] }>;
+  /** Its mods come from the Steam Workshop: the page to browse. needsLogin: Server Forge downloads them with a signed-in Steam account. */
+  workshop?: { url: string; needsLogin: boolean };
   /** Placeholder for that input box (default: a Steam Workshop link). */
   addByIdPlaceholder?: string;
   /** `install` also accepts a folder (Bedrock: unpacked behavior/resource packs can be dropped as folders). */
@@ -225,6 +227,11 @@ export interface GameModule {
   launch(record: ServerRecord, logFile: string): StartOptions;
   /** Executable name, used to make sure a saved PID still belongs to this server. */
   processName: string;
+  /**
+   * How it runs on Linux. Native (the default) has a Linux server build; 'wine' only exists for Windows and runs through
+   * Wine; 'unavailable' can't run there at all and isn't offered.
+   */
+  linux?: 'native' | 'wine' | 'unavailable';
   /**
    * Games that read typed commands (Minecraft). The server then runs under the runner (runner.ts), commands can be
    * sent from the Console tab, and Stop sends `stop` so the world saves.

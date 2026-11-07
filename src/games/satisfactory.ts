@@ -5,6 +5,7 @@
 // Satisfactory Mod Manager (SMM), which can manage a server folder and players' games; the Mods tab lists what's
 // installed and how to point SMM at this server.
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { isLinux } from '../platform/host.ts';
 import path from 'node:path';
 import os from 'node:os';
 import { steamAppUpdate } from '../steamcmd.ts';
@@ -12,7 +13,7 @@ import { sfApi, serverState, claimServer } from './satisfactory-api.ts';
 import type { GameModule, LogParser, LogState, ServerRecord, Settings, AddonSupport } from './types.ts';
 
 export const SATISFACTORY_APP = 1690800;
-const EXE = 'FactoryServer.exe';
+const EXE = isLinux ? path.join('Engine', 'Binaries', 'Linux', 'FactoryServer-Linux-Shipping') : 'FactoryServer.exe';
 
 const STARTS = [
   { value: 'Grass Fields', label: 'Grass Fields (easiest)' },
@@ -34,7 +35,7 @@ function num(v: unknown, name: string, min: number, max: number): number {
 }
 
 /** Where the dedicated server keeps its saves (per Windows account: the one Server Forge runs as). */
-export const saveFolder = () => path.join(process.env.LOCALAPPDATA ?? path.join(os.homedir(), 'AppData', 'Local'), 'FactoryGame', 'Saved', 'SaveGames', 'server');
+export const saveFolder = () => isLinux ? path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'Epic', 'FactoryGame', 'Saved', 'SaveGames', 'server') : path.join(process.env.LOCALAPPDATA ?? path.join(os.homedir(), 'AppData', 'Local'), 'FactoryGame', 'Saved', 'SaveGames', 'server');
 const logFile = (record: ServerRecord) => path.join(record.installDir, 'FactoryGame', 'Saved', 'Logs', 'FactoryGame.log');
 const port = (record: ServerRecord) => Number(record.settings.port) || 7777;
 
@@ -138,7 +139,7 @@ const satisfactoryAddons: AddonSupport = {
 export const satisfactory: GameModule = {
   id: 'satisfactory',
   name: 'Satisfactory',
-  processName: EXE,
+  processName: path.basename(EXE),
 
   fields: [
     { key: 'serverName', label: 'Server name', type: 'text', help: 'Shown in the in-game Server Manager.', restart: false },
@@ -208,6 +209,7 @@ export const satisfactory: GameModule = {
     return {
       exe: path.join(record.installDir, EXE),
       args: [
+        ...(isLinux ? ['FactoryGame'] : []), // FactoryServer.sh passes the project name first on Linux
         '-log',
         '-unattended',
         `-Port=${s.port}`,
@@ -238,7 +240,7 @@ export const satisfactory: GameModule = {
       if (!state.isGameRunning) {
         const sessions = await sfApi<{ sessions: unknown[] }>(p, 'EnumerateSessions').catch(() => ({ sessions: [] }));
         if (!sessions.sessions?.length) {
-          await sfApi(p, 'CreateNewGame', { NewGameData: { SessionName: s.sessionName, MapName: '', StartingLocation: s.startingLocation, SkipOnboarding: false } }, 60_000);
+          await sfApi(p, 'CreateNewGame', { NewGameData: { SessionName: s.sessionName, MapName: '', StartingLocation: s.startingLocation, SkipOnboarding: false, bSkipOnboarding: false } }, 60_000);
           note(`Created a new game "${s.sessionName}" at ${s.startingLocation}.`);
         }
       }

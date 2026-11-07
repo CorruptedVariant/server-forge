@@ -2,6 +2,7 @@
 // makes the game's mods match it. Mods the player installed themselves are left alone; mods that came from the link
 // and were dropped by the server are removed.
 import https from 'node:https';
+import { trackDownload } from '../platform/mod-downloads.ts';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { scanPackage, type ScanResult } from '../modscan.ts';
 import { execFileSync } from 'node:child_process';
@@ -16,6 +17,12 @@ export const VALHEIM_APP_ID = 892970;
 // ---------- finding Valheim ----------
 
 export function steamPath(): string | null {
+  if (process.platform === 'linux') {
+    // Steam's usual places: its own folder, the ~/.steam link, and the Flatpak version.
+    const home = os.homedir();
+    const places = [path.join(home, '.local', 'share', 'Steam'), path.join(home, '.steam', 'steam'), path.join(home, '.steam', 'root'), path.join(home, '.var', 'app', 'com.valvesoftware.Steam', '.local', 'share', 'Steam'), path.join(home, '.var', 'app', 'com.valvesoftware.Steam', 'data', 'Steam')];
+    return places.find((p) => existsSync(path.join(p, 'steamapps'))) ?? null;
+  }
   for (const key of ['HKCU\\Software\\Valve\\Steam', 'HKLM\\SOFTWARE\\WOW6432Node\\Valve\\Steam']) {
     try {
       const out = execFileSync('reg', ['query', key, '/v', key.startsWith('HKCU') ? 'SteamPath' : 'InstallPath'], { encoding: 'utf-8', windowsHide: true });
@@ -35,18 +42,19 @@ export function findValheim(): string | null {
     const vdf = path.join(steam, 'steamapps', 'libraryfolders.vdf');
     if (existsSync(vdf)) for (const m of readFileSync(vdf, 'utf-8').matchAll(/"path"\s+"([^"]+)"/g)) libraries.add(m[1].replace(/\\\\/g, '\\'));
   }
-  for (const drive of ['C', 'D', 'E', 'F']) libraries.add(`${drive}:\\Program Files (x86)\\Steam`), libraries.add(`${drive}:\\SteamLibrary`);
+  if (process.platform !== 'linux') for (const drive of ['C', 'D', 'E', 'F']) libraries.add(`${drive}:\\Program Files (x86)\\Steam`), libraries.add(`${drive}:\\SteamLibrary`);
   for (const lib of libraries) {
     const acf = path.join(lib, 'steamapps', `appmanifest_${VALHEIM_APP_ID}.acf`);
     const installdir = existsSync(acf) ? (/"installdir"\s+"([^"]+)"/.exec(readFileSync(acf, 'utf-8'))?.[1] ?? 'Valheim') : 'Valheim';
     const dir = path.join(lib, 'steamapps', 'common', installdir);
-    if (existsSync(path.join(dir, 'valheim.exe'))) return dir;
+    if (isValheimFolder(dir)) return dir;
   }
   return null;
 }
 
 export function isValheimFolder(dir: string) {
-  return existsSync(path.join(dir, 'valheim.exe'));
+  // On Linux Steam installs the native game (valheim.x86_64), or valheim.exe when it's set to run through Proton.
+  return existsSync(path.join(dir, 'valheim.exe')) || (process.platform === 'linux' && existsSync(path.join(dir, 'valheim.x86_64')));
 }
 
 // ---------- links ----------
@@ -93,8 +101,18 @@ export function pinnedGet(link: Link, urlPath: string, asBuffer = false): Promis
           return;
         }
         const chunks: Buffer[] = [];
-        res.on('data', (d) => chunks.push(d));
+        // Mod files from the server show in the progress panel (the mod list itself isn't worth a row).
+        const tracked = asBuffer ? trackDownload(decodeURIComponent(urlPath.split('/').pop() ?? 'mod')) : null;
+        const total = Number(res.headers['content-length']) || 0;
+        let received = 0;
+        res.on('data', (d) => {
+          chunks.push(d);
+          received += d.length;
+          tracked?.progress(received, total);
+        });
+        res.on('error', () => tracked?.failed());
         res.on('end', () => {
+          tracked?.done();
           const body = Buffer.concat(chunks);
           if ((res.statusCode ?? 500) >= 400) {
             let msg = `The server answered ${res.statusCode}.`;
@@ -356,7 +374,7 @@ export interface Prepared {
  * without installing anything yet.
  */
 export async function prepareSync(gameDir: string, manifest: Manifest, link: Link, workRoot: string, log: (line: string) => void): Promise<Prepared> {
-  if (!isValheimFolder(gameDir)) throw new Error("That folder doesn't contain valheim.exe.");
+  if (!isValheimFolder(gameDir)) throw new Error("That folder doesn't contain the Valheim game.");
   const plan = planSync(gameDir, manifest, link);
   const workDir = path.join(workRoot, `sync-${randomUUID().slice(0, 8)}`);
   mkdirSync(workDir, { recursive: true });

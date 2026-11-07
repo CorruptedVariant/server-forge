@@ -42,8 +42,8 @@ export function text(v: unknown, name: string, max: number, required = false): s
 export const newPassword = () => randomBytes(9).toString('base64url');
 
 /** Installs or updates the server with SteamCMD and checks `exe` (relative to the install folder) is there. */
-export async function steamInstall(record: ServerRecord, job: Job, appId: number, exe: string, name: string) {
-  await steamAppUpdate(appId, record.installDir, job);
+export async function steamInstall(record: ServerRecord, job: Job, appId: number, exe: string, name: string, opts: { windowsBuild?: boolean } = {}) {
+  await steamAppUpdate(appId, record.installDir, job, opts);
   if (!existsSync(path.join(record.installDir, exe))) throw new Error(`Install finished but ${exe} is missing.`);
   job.line(`${name} dedicated server is installed.`);
 }

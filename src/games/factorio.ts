@@ -8,19 +8,20 @@
 // Mods come from the Factorio mod portal (needs the same login); players' games download a server's mods by themselves
 // when they join, so the share link only carries how to join.
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, rmSync, cpSync, copyFileSync, statSync } from 'node:fs';
+import { bin, isLinux } from '../platform/host.ts';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { randomBytes } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
-import { downloadFile, extractZip, formatBytes } from '../download.ts';
+import { downloadFile, extractZip, formatBytes, extractTar } from '../download.ts';
 import { factorioLogin, latestReleases } from '../factorio-key.ts';
 import { ZipFile } from '../zip.ts';
 import type { GameModule, LogParser, LogState, ServerRecord, Settings, AddonSupport } from './types.ts';
 import type { Job } from '../jobs.ts';
 
 const execFileAsync = promisify(execFile);
-const EXE_REL = path.join('bin', 'x64', 'factorio.exe');
+const EXE_REL = path.join('bin', 'x64', bin('factorio.exe', 'factorio'));
 const VERSION_FILE = '.tavernhost-version';
 const SETTINGS_FILE = 'server-settings.json';
 const LISTS = { admins: 'server-adminlist.json', whitelist: 'server-whitelist.json', banned: 'server-banlist.json' } as const;
@@ -66,12 +67,13 @@ export function installedFactorio(installDir: string): { version: string; build:
 
 /** The build to download for this server: Space Age only for accounts that own it (and servers that want it). */
 function wantedBuild(record: ServerRecord): 'alpha' | 'expansion' {
+  if (isLinux) return record.settings.spaceAge ? 'expansion' : 'alpha'; // the headless server contains Space Age: nothing to download or prove
   return record.settings.spaceAge && factorioLogin()?.spaceAge ? 'expansion' : 'alpha';
 }
 
 export async function latestFactorio(channel: string, build: string): Promise<string> {
   const r = await latestReleases();
-  const v = (channel === 'experimental' ? r.experimental : r.stable)?.[build === 'expansion' ? 'expansion' : 'alpha'];
+  const v = (channel === 'experimental' ? r.experimental : r.stable)?.[isLinux ? 'headless' : build === 'expansion' ? 'expansion' : 'alpha'];
   if (!v) throw new Error("factorio.com didn't list a current version.");
   return v;
 }
@@ -80,7 +82,7 @@ export async function latestFactorio(channel: string, build: string): Promise<st
 
 /** Write data stays in the server folder (saves, mods, config, logs), never in %APPDATA%\Factorio. */
 function writeConfigPath(record: ServerRecord) {
-  writeFileSync(path.join(record.installDir, 'config-path.cfg'), 'config-path=__PATH__executable__/../../config\r\nuse-system-read-write-data-directories=false\r\n');
+  writeFileSync(path.join(record.installDir, 'config-path.cfg'), 'config-path=__PATH__executable__/../../config\nuse-system-read-write-data-directories=false\n'.replace(/\n/g, isLinux ? '\n' : '\r\n'));
 }
 
 function writeServerSettings(record: ServerRecord) {
@@ -144,7 +146,7 @@ function setModListEntry(record: ServerRecord, name: string, enabled: boolean | 
 
 /** Space Age's three mods follow the "Space Age" setting (only on the expansion build). */
 function applyExpansion(record: ServerRecord) {
-  const on = installedFactorio(record.installDir)?.build === 'expansion' && !!record.settings.spaceAge;
+  const on = isLinux ? !!record.settings.spaceAge : installedFactorio(record.installDir)?.build === 'expansion' && !!record.settings.spaceAge;
   const list = readModList(record);
   for (const name of ['base', ...EXPANSION_MODS]) {
     list.mods = list.mods.filter((m) => m.name !== name);
@@ -435,7 +437,39 @@ async function unzipFast(zip: string, dest: string) {
   }
 }
 
+/** Linux has Factorio's headless server: a free download, no factorio.com login, and it includes Space Age's content. */
+async function installHeadless(record: ServerRecord, job: Job, opts?: { force?: boolean }) {
+  const build = wantedBuild(record);
+  job.update('Looking up the latest Factorio version…', null);
+  const version = await latestFactorio(String(record.settings.channel ?? 'stable'), build);
+  const have = installedFactorio(record.installDir);
+  if (!opts?.force && have?.version === version && existsSync(exe(record))) {
+    job.line(`Factorio ${version} is already installed.`);
+    return;
+  }
+  const work = path.join(os.tmpdir(), `tavernhost-factorio-${randomBytes(4).toString('hex')}`);
+  mkdirSync(work, { recursive: true });
+  try {
+    const archive = path.join(work, 'factorio.tar.xz');
+    job.update(`Downloading Factorio ${version}…`, 0);
+    await downloadFile(`https://www.factorio.com/get-download/${version}/headless/linux64`, archive, (pct, got) => job.update(`Downloading Factorio ${version}… ${formatBytes(got)}`, pct));
+    job.update('Unpacking…', null);
+    await extractTar(archive, path.join(work, 'x'));
+    const top = readdirSync(path.join(work, 'x')).map((d) => path.join(work, 'x', d)).find((d) => existsSync(path.join(d, EXE_REL)));
+    if (!top) throw new Error('The download has no Factorio server in it.');
+    mkdirSync(record.installDir, { recursive: true });
+    for (const d of ['bin', 'data']) rmSync(path.join(record.installDir, d), { recursive: true, force: true });
+    cpSync(top, record.installDir, { recursive: true, force: true });
+    writeConfigPath(record);
+    writeFileSync(path.join(record.installDir, VERSION_FILE), JSON.stringify({ version, build, at: Date.now() }, null, 2));
+    job.line(`Factorio ${version} is installed.`);
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+}
+
 async function install(record: ServerRecord, job: Job, opts?: { force?: boolean }) {
+  if (isLinux) return installHeadless(record, job, opts);
   const login = factorioLogin();
   if (!login) throw new Error("Factorio's server download needs your factorio.com login: add it in Settings → Integrations (paste your username and token, or import it from this PC), then try again.");
   const build = wantedBuild(record);
@@ -479,7 +513,7 @@ async function install(record: ServerRecord, job: Job, opts?: { force?: boolean 
 export const factorio: GameModule = {
   id: 'factorio',
   name: 'Factorio',
-  processName: 'factorio.exe',
+  processName: bin('factorio.exe', 'factorio'),
 
   fields: [
     { key: 'serverName', label: 'Server name', type: 'text', help: 'Shown in the server browser.', restart: true },
@@ -582,7 +616,7 @@ export const factorio: GameModule = {
   /** Before every start: settings file, Space Age switch, lists, and a new map if there's no save yet. */
   async prepare(record, note) {
     const have = installedFactorio(record.installDir);
-    if (have && (have.build === 'expansion') !== (wantedBuild(record) === 'expansion') && factorioLogin()) {
+    if (!isLinux && have && (have.build === 'expansion') !== (wantedBuild(record) === 'expansion') && factorioLogin()) {
       note(`Space Age was switched ${record.settings.spaceAge ? 'on' : 'off'}: use "Update server software" (Force) to download the ${record.settings.spaceAge ? 'Space Age' : 'base game'} build.`);
     }
     writeConfigPath(record);

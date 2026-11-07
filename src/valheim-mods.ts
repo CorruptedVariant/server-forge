@@ -7,10 +7,12 @@
 // Turned-off mods are moved to BepInEx/tavernhost-disabled/ (BepInEx loads everything under plugins/).
 // What's installed is recorded in BepInEx/tavernhost-mods.json.
 import { existsSync, mkdirSync, writeFileSync, readFileSync, rmSync, renameSync, readdirSync, statSync, createWriteStream } from 'node:fs';
+import { trackDownload } from './platform/mod-downloads.ts';
+import { isLinux } from './platform/host.ts';
 import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
-import { Readable } from 'node:stream';
+import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { ZipFile } from './zip.ts';
 
@@ -81,8 +83,50 @@ function saveRegistry(gameDir: string, reg: Registry) {
 
 /** BepInEx is installed if its core and the doorstop loader are there. */
 export function bepinexStatus(gameDir: string) {
-  const installed = existsSync(path.join(bepDir(gameDir), 'core', 'BepInEx.dll')) && existsSync(path.join(gameDir, 'winhttp.dll'));
+  const installed = existsSync(path.join(bepDir(gameDir), 'core', 'BepInEx.dll')) && (existsSync(path.join(gameDir, 'winhttp.dll')) || (isLinux && existsSync(path.join(gameDir, 'doorstop_libs', 'libdoorstop_x64.so'))));
   return { installed, version: installed ? (loadRegistry(gameDir).bepinex?.version ?? 'unknown') : null };
+}
+
+/**
+ * What loads BepInEx into a native Linux Valheim (server or game): the same settings as the pack's start_*_bepinex.sh.
+ * Empty when it isn't installed or the loader is switched off, so it follows the same switch as on Windows.
+ */
+export function linuxDoorstopEnv(gameDir: string): Record<string, string> {
+  if (!existsSync(path.join(gameDir, 'doorstop_libs', 'libdoorstop_x64.so')) || !existsSync(path.join(bepDir(gameDir), 'core', 'BepInEx.Preloader.dll'))) return {};
+  try {
+    if (/^\s*enabled\s*=\s*false/im.test(readFileSync(path.join(gameDir, 'doorstop_config.ini'), 'utf-8'))) return {};
+  } catch {}
+  return {
+    DOORSTOP_ENABLED: '1',
+    DOORSTOP_TARGET_ASSEMBLY: './BepInEx/core/BepInEx.Preloader.dll',
+    LD_LIBRARY_PATH: './doorstop_libs:./linux64',
+    LD_PRELOAD: 'libdoorstop_x64.so',
+  };
+}
+
+/**
+ * The Steam launch option a Linux player needs once for mods to load, or null if none is needed yet. Under Proton the
+ * game has to be told to use BepInEx's winhttp.dll; the native game starts through a small script, which reads the same
+ * loader switch as everything else (so Vanilla stays vanilla).
+ */
+export function linuxLaunchOption(gameDir: string): { mode: 'proton' | 'native'; option: string } | null {
+  if (!bepinexStatus(gameDir).installed) return null;
+  if (existsSync(path.join(gameDir, 'valheim.exe'))) return { mode: 'proton', option: 'WINEDLLOVERRIDES="winhttp=n,b" %command%' };
+  const script = path.join(gameDir, 'sf-start.sh');
+  writeFileSync(
+    script,
+    `#!/bin/sh
+# Written by SF Mod Manager: loads BepInEx into native Linux Valheim, unless the loader is switched off.
+cd "$(dirname "$0")"
+if ! grep -qiE '^[[:space:]]*enabled[[:space:]]*=[[:space:]]*false' doorstop_config.ini 2>/dev/null; then
+  export DOORSTOP_ENABLED=1 DOORSTOP_TARGET_ASSEMBLY="$PWD/BepInEx/core/BepInEx.Preloader.dll"
+  export LD_LIBRARY_PATH="$PWD/doorstop_libs:$LD_LIBRARY_PATH" LD_PRELOAD="libdoorstop_x64.so:$LD_PRELOAD"
+fi
+exec "$@"
+`,
+    { mode: 0o755 },
+  );
+  return { mode: 'native', option: `"${script}" %command%` };
 }
 
 // ---------- the loader switch (vanilla vs modded) ----------
@@ -223,7 +267,23 @@ export async function downloadTo(url: string, dest: string, headers: Record<stri
   const res = await fetch(url, { headers: { ...UA, ...headers }, redirect: 'follow' });
   if (!res.ok || !res.body) throw new Error(`Download failed (HTTP ${res.status}).`);
   mkdirSync(path.dirname(dest), { recursive: true });
-  await pipeline(Readable.fromWeb(res.body as any), createWriteStream(dest));
+  const tracked = trackDownload(dest);
+  const total = Number(res.headers.get('content-length')) || 0;
+  let received = 0;
+  const counter = new Transform({
+    transform(chunk, _enc, done) {
+      received += chunk.length;
+      tracked.progress(received, total);
+      done(null, chunk);
+    },
+  });
+  try {
+    await pipeline(Readable.fromWeb(res.body as any), counter, createWriteStream(dest));
+    tracked.done();
+  } catch (err) {
+    tracked.failed();
+    throw err;
+  }
 }
 
 // ---------- installing a package zip ----------
@@ -297,7 +357,7 @@ export function installBepInExZip(gameDir: string, zipFile: string, version: str
       const n = ZipFile.normalise(raw);
       if (!n.startsWith('BepInExPack_Valheim/') || n.endsWith('/')) continue;
       const rel = n.slice('BepInExPack_Valheim/'.length);
-      if (!rel || /\.(sh|dylib|so)$/i.test(rel)) continue; // Linux/macOS launchers aren't needed on Windows
+      if (!rel || (!isLinux && /\.(sh|dylib|so)$/i.test(rel))) continue; // Linux/macOS launchers aren't needed on Windows
       const dest = safeJoin(gameDir, rel);
       if (/^BepInEx\/config\//i.test(rel) && existsSync(dest)) continue;
       countBytes(total, extractEntry(zip, raw, dest));

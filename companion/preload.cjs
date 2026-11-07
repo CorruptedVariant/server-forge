@@ -64,10 +64,12 @@ if (location.protocol === 'file:') contextBridge.exposeInMainWorld('modsync', {
   /** Saves (after checking with Nexus Mods) or, with '', removes the Nexus API key. */
   setNexusKey: (key) => call('set-nexus-key', String(key)),
   installNexus: (input) => call('install-nexus', String(input)),
+  cancelDownload: (id) => call('download-cancel', String(id)),
+  dismissDownload: (id) => call('download-dismiss', String(id)),
   /** Window/taskbar icon from a PNG data URL (the colour-matched logo). */
   setIcon: (dataUrl) => ipcRenderer.invoke('set-icon', String(dataUrl)),
   on: (channel, fn) => {
-    if (['log', 'installed', 'auto-synced', 'state-changed', 'needs-review', 'update-progress'].includes(channel)) ipcRenderer.on(channel, (_e, data) => fn(data));
+    if (['log', 'installed', 'auto-synced', 'state-changed', 'needs-review', 'update-progress', 'downloads'].includes(channel)) ipcRenderer.on(channel, (_e, data) => fn(data));
   },
 });
 

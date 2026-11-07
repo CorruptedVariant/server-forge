@@ -71,7 +71,11 @@ async function refresh() {
   render();
 }
 
+const scanner = () => (st?.platform === 'linux' ? 'ClamAV if you have it installed' : 'Windows Defender');
+
 function render() {
+  document.querySelector('button[data-game="starvalor"]')?.toggleAttribute('hidden', st?.platform === 'linux');
+  if (st?.platform === 'linux' && currentTab === 'starvalor') setTab('valheim');
   $('appVersion').textContent = st.version ? `v${st.version}` : '';
   const beta = document.createElement('span');
   beta.className = 'beta-badge';
@@ -109,6 +113,22 @@ function render() {
     });
     line.append(open, change);
     g.append(line);
+    // Linux: Steam has to start the game a certain way, once, or the mods never load.
+    if (st.linuxLaunch) {
+      const box = el('div', 'setup-box');
+      box.append(el('p', 'muted small', `One step in Steam for mods to load (${st.linuxLaunch.mode === 'proton' ? 'Valheim runs through Proton here' : 'native Linux Valheim'}): right-click Valheim → Properties → paste this into Launch Options. On Steam Deck do it from Desktop Mode or the game's settings.`));
+      const row = el('div', 'row');
+      const code = el('code', 'path', st.linuxLaunch.option);
+      const copy = el('button', 'small', 'Copy');
+      copy.addEventListener('click', async () => {
+        await navigator.clipboard.writeText(st.linuxLaunch.option);
+        copy.textContent = 'Copied';
+        setTimeout(() => (copy.textContent = 'Copy'), 1500);
+      });
+      row.append(code, copy);
+      box.append(row);
+      g.append(box);
+    }
     if (st.bepinex?.installed) {
       g.append(
         st.loaderOn === false
@@ -866,10 +886,10 @@ function scanBadge(scan) {
 function showReview(review, game = 'valheim') {
   $('reviewIntro').textContent =
     game === 'java'
-      ? "Every mod was downloaded from the server and checked (Windows Defender, and whether Modrinth has the exact same file). Nothing has been installed yet."
+      ? `Every mod was downloaded from the server and checked (${scanner()}, and whether Modrinth has the exact same file). Nothing has been installed yet.`
       : game === 'palworld'
-        ? 'Every mod was downloaded from the server and checked with Windows Defender. Nothing has been installed yet. Palworld sets the mods up the next time it starts.'
-        : 'Every mod was downloaded and safety-checked (Windows Defender, Thunderstore status and a scan for malware-like behaviour). Nothing has been installed yet.';
+        ? `Every mod was downloaded from the server and checked with ${scanner()}. Nothing has been installed yet. Palworld sets the mods up the next time it starts.`
+        : `Every mod was downloaded and safety-checked (${scanner()}, Thunderstore status and a scan for malware-like behaviour). Nothing has been installed yet.`;
   const body = $('reviewBody');
   body.innerHTML = '';
   let needsTick = 0;
@@ -1105,6 +1125,44 @@ $('palDrop').addEventListener('drop', async (e) => {
 });
 
 api.on('log', log);
+// The mod downloads panel (the mod browser window shows the same list).
+api.on('downloads', (rows) => {
+  const tray = document.getElementById('downloadTray');
+  tray.hidden = !rows.length;
+  tray.textContent = '';
+  if (!rows.length) return;
+  tray.append(el('h4', null, 'Mod downloads'));
+  const mbs = (n) => (n / 1048576).toFixed(n < 104857600 ? 1 : 0);
+  for (const d of rows) {
+    const row = el('div', `download-row ${d.state}`);
+    const top = el('div', 'download-top');
+    const name = el('span', 'download-name', d.name);
+    name.title = d.name;
+    top.append(name);
+    if (d.canCancel || d.state === 'failed') {
+      const b = el('button', 'small ghost', d.state === 'failed' ? 'Dismiss' : 'Cancel');
+      b.addEventListener('click', () => (d.state === 'failed' ? api.dismissDownload(d.id) : api.cancelDownload(d.id)));
+      top.append(b);
+    }
+    row.append(top);
+    if (d.state === 'downloading' || d.state === 'installing') {
+      const known = d.state === 'downloading' && d.total > 0;
+      const bar = el('div', `download-bar${known ? '' : ' busy'}`);
+      const fill = el('i');
+      if (known) fill.style.width = `${Math.min(100, (d.received / d.total) * 100)}%`;
+      bar.append(fill);
+      row.append(bar);
+    }
+    const note =
+      d.state === 'downloading' ? (d.total ? `${Math.floor((d.received / d.total) * 100)}%  ·  ${mbs(d.received)} of ${mbs(d.total)} MB` : d.received ? `${mbs(d.received)} MB so far` : 'Downloading…')
+      : d.state === 'waiting' ? 'Downloaded. Confirm the install in the browser window.'
+      : d.state === 'installing' ? d.note || 'Checking and installing…'
+      : d.state === 'done' ? 'Installed' : d.note || 'Failed';
+    row.append(el('div', 'download-note', note));
+    tray.append(row);
+  }
+});
+
 api.on('installed', (r) => {
   if (r.error) toast(`${r.filename}: ${r.error}`, true);
   else {

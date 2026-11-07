@@ -2,7 +2,7 @@
 
 > **Beta:** Server Forge and SF Mod Manager are both in beta. They're actively being worked on and updates are frequent, so expect changes and the odd rough edge. Please report problems on the [Issues](https://github.com/Volatile111/server-forge/issues) page (or **Help → Report a problem** in either app).
 
-Server Forge is a Windows app for running your own game servers from one panel. It supports Minecraft Bedrock, Minecraft Java (including BungeeCord networks), Valheim, Terraria (vanilla and tModLoader), Satisfactory, Space Engineers, Factorio, Palworld, Enshrouded, V Rising, Project Zomboid and 7 Days to Die.
+Server Forge is a Windows and Linux app for running your own game servers from one panel. It supports Minecraft Bedrock, Minecraft Java (including BungeeCord networks), Valheim, Terraria (vanilla and tModLoader), Satisfactory, Space Engineers, Factorio, Palworld, Enshrouded, V Rising, Project Zomboid and 7 Days to Die.
 
 - Start, stop and restart servers, with a live console, player list and countdowns that warn players first.
 - Run servers on other systems too (nodes), managed from one main panel.
@@ -50,6 +50,43 @@ Your game servers keep running when you close the Server Forge window, and while
 4. **Minecraft Java:** click **Sync now**, then pick the server's profile in the Minecraft Launcher. It has its own folder, so your other worlds and mods aren't touched. (Forge and NeoForge: run the installer the app gives you once.)
 
 **Star Valor** (single player, no server link needed): the **Star Valor** tab is the built-in Achilles Mod Manager. It turns BepInEx mods and ship files on and off, checks them against your game version, updates them, manages BepInEx, and edits ship stats.
+
+## Linux and SteamOS
+
+Both apps run on SteamOS and on the main Linux distros (64-bit Intel/AMD).
+
+**Which download:**
+
+- **SteamOS, Arch, and anything else: the `.AppImage`.** Make it executable and open it. It copies the app to `~/.local/share` and adds it to your applications menu, so nothing is installed system-wide and SteamOS updates leave it alone. You can delete the AppImage afterwards.
+- **Ubuntu, Debian, Mint: the `.deb`.**
+- **Fedora, openSUSE, RHEL: the `.rpm`.**
+
+If an AppImage won't open on an older Ubuntu, install `libfuse2` (`libfuse2t64` on 24.04), or use the `.deb`.
+
+**Which servers run how on Linux:**
+
+| Game | On Linux |
+|---|---|
+| Minecraft Bedrock (vanilla), Minecraft Java, Valheim, Terraria, tModLoader, Satisfactory, Factorio, Palworld, Project Zomboid, 7 Days to Die | Native Linux server |
+| Enshrouded, V Rising | Windows-only servers, run through Wine. Install `wine` and `xvfb` first. Not available on SteamOS, which has no Wine package |
+| Space Engineers | Not available |
+| Minecraft Bedrock with Endstone | Not available yet |
+
+Steam servers need SteamCMD's 32-bit libraries. SteamOS has them; on other distros Server Forge tells you the exact command to run.
+
+**Mods that behave differently:**
+
+- **Palworld UE4SS mods don't run on the Linux server**, because UE4SS is Windows code. Server Forge warns you on the Mods tab. Other Palworld mods install, but whether the Linux server loads them hasn't been confirmed yet.
+- **Valheim players** have to paste one launch option into Steam once. SF Mod Manager shows it, with a Copy button, on the Valheim tab.
+- **The Star Valor tab** isn't available in SF Mod Manager on Linux yet.
+- **Virus scanning** uses ClamAV if it's installed. Without it, mods only get the behaviour scan.
+
+**Running without a desktop:** the `.deb` and `.rpm` can run just the service on a headless machine, and you then manage it from a browser or a main panel:
+
+```
+cd "/opt/Server Forge/resources/app"
+PANEL_DATA_DIR="$HOME/.config/Server Forge/data" ELECTRON_RUN_AS_NODE=1 "/opt/Server Forge/server-forge" dist/main.js
+```
 
 ## Privacy
 

@@ -2,6 +2,7 @@
 // (from a thmods:// link), installs BepInEx, and has a Play button that syncs first and then starts Valheim.
 // Uses the same install code as Server Forge (compiled to dist/), so both sides lay out mods identically.
 import { app, BrowserWindow, dialog, ipcMain, shell, Menu, nativeImage, safeStorage } from 'electron';
+import { createDownloadMonitor } from './download-monitor.js';
 import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync, createWriteStream, mkdtempSync, cpSync, statSync } from 'node:fs';
 import { randomBytes, createHash } from 'node:crypto';
 import { execFileSync, spawn } from 'node:child_process';
@@ -12,12 +13,17 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(here, '..');
 const lib = (p) => import(pathToFileURL(path.join(root, 'dist', p)).href);
+const LINUX = process.platform === 'linux';
+const host = await lib('platform/host.js');
+const linuxApp = LINUX ? await lib('platform/linux-app.js') : null;
+const LINUX_INFO = { slug: 'sf-mod-manager', name: 'SF Mod Manager', comment: "Keeps your mods matched to your game servers", icon: path.join(here, 'icon.png') };
 const sync = await lib('modsync/sync.js');
 const mc = await lib('modsync/minecraft.js');
 const pal = await lib('modsync/palworld.js');
 const vm = await lib('valheim-mods.js');
 const scan = await lib('modscan.js');
 const nexus = await lib('nexus.js');
+const modDownloads = await lib('platform/mod-downloads.js');
 
 // Run from the source files (npm run client), not installed: a development copy. It keeps its own data folder and
 // taskbar identity, so it runs next to the installed app (the one-copy lock is per data folder) and never touches the
@@ -29,6 +35,13 @@ app.setAppUserModelId(DEV ? 'TavernClientModManager.Dev' : 'TavernClientModManag
 app.setPath('userData', process.env.MOD_FORGE_DATA_DIR || path.join(app.getPath('appData'), DEV ? 'Tavern Client Mod Manager (dev)' : 'Tavern Client Mod Manager'));
 app.setName('SF Mod Manager');
 app.commandLine.appendSwitch('force-color-profile', 'srgb');
+// Linux, started from the AppImage: put the app in the home folder and the menu, then carry on from that copy.
+if (LINUX && app.isPackaged && linuxApp.runningFromAppImage()) {
+  const run = await linuxApp.installFromAppImage({ ...LINUX_INFO, version: app.getVersion() }, process.execPath);
+  linuxApp.startDetached(run);
+  app.exit(0);
+  await new Promise(() => {});
+}
 if (!app.requestSingleInstanceLock()) app.quit();
 
 // ---------- settings ----------
@@ -179,6 +192,7 @@ function palDir() {
 
 /** Palworld sets mods up when it starts and reads its mod settings then: change them only while it's closed. */
 function palworldRunning() {
+  if (LINUX) return host.linuxProcessRunning(/Palworld-Win64-Shipping\.exe/i);
   try {
     // CSV: the table form cuts names longer than 25 characters ("Palworld-Win64-Shipping.e").
     return /Palworld-Win64-Shipping\.exe/i.test(execFileSync('tasklist', ['/FI', 'IMAGENAME eq Palworld-Win64-Shipping.exe', '/NH', '/FO', 'CSV'], { encoding: 'utf-8', windowsHide: true }));
@@ -188,6 +202,7 @@ function palworldRunning() {
 }
 
 function valheimRunning() {
+  if (LINUX) return host.linuxProcessRunning(/(^|[\\/\s])valheim(\.exe|\.x86_64)(\s|$)/i);
   try {
     return /valheim\.exe/i.test(execFileSync('tasklist', ['/FI', 'IMAGENAME eq valheim.exe', '/NH'], { encoding: 'utf-8', windowsHide: true }));
   } catch {
@@ -199,6 +214,22 @@ function valheimRunning() {
 
 let win = null;
 const send = (channel, data) => win && !win.isDestroyed() && win.webContents.send(channel, data);
+
+// The downloads panel: in this window, and in the mod browser window. Everything the app downloads for mods reports here.
+const monitor = createDownloadMonitor({ onChange: (list) => send('downloads', list) });
+const shownDownloads = new Set();
+modDownloads.watchAllDownloads('app', (list) => {
+  for (const d of list) {
+    const id = `t-${d.id}`;
+    if (d.state === 'downloading') {
+      shownDownloads.add(id);
+      monitor.set(id, { name: d.name, state: 'downloading', received: d.received, total: d.total });
+    } else if (shownDownloads.delete(id)) {
+      if (d.state === 'failed') monitor.set(id, { state: 'failed', note: 'Download failed.' });
+      else monitor.remove(id);
+    }
+  }
+});
 const log = (line) => send('log', line);
 
 app.on('second-instance', () => {
@@ -296,6 +327,8 @@ async function state() {
     dev: DEV,
     gameDir: dir,
     bepinex: dir ? vm.bepinexStatus(dir) : null,
+    platform: process.platform,
+    linuxLaunch: LINUX && dir ? vm.linuxLaunchOption(dir) : null,
     profiles: profiles().map((p) => ({ id: p.id, name: p.name, off: p.disabled.length })),
     activeProfile: activeProfile(),
     loaderOn: dir ? vm.loaderEnabled(dir) : null,
@@ -472,6 +505,8 @@ const handle = (name, fn) =>
   });
 
 handle('state', state);
+handle('download-cancel', (id) => monitor.cancel(String(id)));
+handle('download-dismiss', (id) => monitor.dismiss(String(id)));
 handle('add-link', async (raw) => {
   const link = sync.parseLink(String(raw));
   const any = await sync.fetchAnyManifest(link); // proves the link works before saving it
@@ -530,9 +565,9 @@ handle('launch', async () => {
   await shell.openExternal(`steam://rungameid/${sync.VALHEIM_APP_ID}`);
 });
 handle('pick-folder', async () => {
-  const r = await dialog.showOpenDialog(win, { title: 'Choose the Valheim folder (with valheim.exe)', properties: ['openDirectory'] });
+  const r = await dialog.showOpenDialog(win, { title: 'Choose the Valheim game folder', properties: ['openDirectory'] });
   if (r.canceled || !r.filePaths[0]) return null;
-  if (!sync.isValheimFolder(r.filePaths[0])) throw new Error("That folder doesn't contain valheim.exe.");
+  if (!sync.isValheimFolder(r.filePaths[0])) throw new Error("That folder doesn't contain the Valheim game.");
   settings.gameDir = r.filePaths[0];
   saveSettings(settings);
   return settings.gameDir;
@@ -610,11 +645,11 @@ handle('browse-hexium', async () => openBrowser(vm.HEXIUM, 'Hexium'));
 let pickedInstaller = null;
 handle('pick-update', async () => {
   if (!app.isPackaged) throw new Error('Updating from a file only works in the installed app (this copy runs from the source files).');
-  const r = await dialog.showOpenDialog(win, { title: 'Choose a SF Mod Manager installer', filters: [{ name: 'Installer', extensions: ['exe'] }], properties: ['openFile'] });
+  const r = await dialog.showOpenDialog(win, { title: 'Choose a SF Mod Manager installer', filters: [{ name: 'Installer', extensions: LINUX ? ['AppImage', 'deb', 'rpm'] : ['exe'] }], properties: ['openFile'] });
   if (r.canceled || !r.filePaths[0]) return null;
   const file = r.filePaths[0];
   let info = {};
-  try {
+  if (!LINUX) try {
     const out = execFileSync(
       'powershell.exe',
       ['-NoProfile', '-NonInteractive', '-Command', '$v = (Get-Item -LiteralPath $env:TH_FILE).VersionInfo; @{ product = $v.ProductName; version = $v.ProductVersion } | ConvertTo-Json -Compress'],
@@ -623,7 +658,7 @@ handle('pick-update', async () => {
     info = JSON.parse(out.trim() || '{}');
   } catch {}
   const version = String(info.version ?? /(\d+\.\d+\.\d+)/.exec(path.basename(file))?.[1] ?? '').replace(/\.0$/, '');
-  if (!/SF Mod Manager|Tavern Client Mod Manager/i.test(`${info.product ?? ''} ${path.basename(file)}`)) throw new Error("That isn't a SF Mod Manager installer.");
+  if (!/SF[ -]Mod[ -]Manager|Tavern[ -]Client[ -]Mod[ -]Manager/i.test(`${info.product ?? ''} ${path.basename(file)}`)) throw new Error("That isn't a SF Mod Manager installer.");
   pickedInstaller = { file, version };
   return { name: path.basename(file), version, current: app.getVersion() };
 });
@@ -642,7 +677,9 @@ handle('run-update', async () => {
 // installing downloads the installer here (never from a page-given address) and runs it like "Update from a file".
 
 const RELEASES = 'Volatile111/sf-mod-manager-releases';
-const INSTALLER_ASSET = /^(?:SF-Mod-Manager|Tavern-Client-Mod-Manager)-Setup-(\d+\.\d+\.\d+)\.exe$/;
+const LINUX_KIND = LINUX && app.isPackaged ? linuxApp.installKind(process.execPath) : 'appimage';
+const LINUX_ASSET = { appimage: /^SF-Mod-Manager-(\d+\.\d+\.\d+)-x86_64\.AppImage$/, deb: /^SF-Mod-Manager-(\d+\.\d+\.\d+)-amd64\.deb$/, rpm: /^SF-Mod-Manager-(\d+\.\d+\.\d+)-x86_64\.rpm$/ };
+const INSTALLER_ASSET = LINUX ? (LINUX_ASSET[LINUX_KIND] ?? LINUX_ASSET.appimage) : /^(?:SF-Mod-Manager|Tavern-Client-Mod-Manager)-Setup-(\d+\.\d+\.\d+)\.exe$/;
 let latestRelease = { at: 0, info: null, error: null };
 
 function isNewer(a, b) {
@@ -727,6 +764,7 @@ handle('install-app-update', async () => {
  * error). Same helper as Server Forge's (desktop/main.js).
  */
 function runUpdateWithWindow(installer, { product, version, note = '', cleanup = null }) {
+  if (LINUX) return linuxApp.applyUpdate(installer, process.pid, path.join(app.getPath('home'), '.local', 'share', LINUX_INFO.slug, 'run.sh'));
   const script = [
     'Add-Type -AssemblyName System.Windows.Forms',
     'Add-Type -AssemblyName System.Drawing',
@@ -1008,6 +1046,7 @@ function openBrowser(url, site, game = 'valheim') {
     else if (/^https?:\/\//.test(next)) browser.loadURL(next);
     return { action: 'deny' };
   });
+  monitor.attach(browser);
   browser.webContents.session.on('will-download', (_e, item) => {
     const filename = item.getFilename();
     // Hexium's "Download" gives just "<version>.zip": install it by name from the mod page being viewed instead.
@@ -1028,9 +1067,13 @@ function openBrowser(url, site, game = 'valheim') {
     const tmp = path.join(os.tmpdir(), `thsync-${Date.now()}-${filename.replace(/[^\w.\- ]/g, '_')}`);
     item.setSavePath(tmp);
     log(`Downloading ${filename}…`);
+    const dlId = `file-${randomBytes(4).toString('hex')}`;
+    monitor.set(dlId, { name: filename, state: 'downloading', total: item.getTotalBytes() }, () => item.cancel());
+    item.on('updated', () => monitor.set(dlId, { state: 'downloading', received: item.getReceivedBytes(), total: item.getTotalBytes() }));
     item.once('done', async (_ev, st) => {
       try {
         if (st !== 'completed') throw new Error(`Download ${st}.`);
+        monitor.set(dlId, { state: 'waiting' });
         if (browserGame === 'palworld') {
           palForChange();
           const { response } = await dialog.showMessageBox(browser && !browser.isDestroyed() ? browser : win, {
@@ -1043,7 +1086,9 @@ function openBrowser(url, site, game = 'valheim') {
             cancelId: 0,
           });
           if (response !== 1) throw new Error('Not installed (cancelled).');
+          monitor.set(dlId, { state: 'installing' });
           const r = await palInstall(tmp);
+          monitor.set(dlId, { state: 'done' });
           send('installed', { filename, done: [...r.done, ...r.warnings.map((w) => `⚠ ${w}`)] });
           return;
         }
@@ -1061,9 +1106,14 @@ function openBrowser(url, site, game = 'valheim') {
           cancelId: 0,
         });
         if (response !== 1) throw new Error('Not installed (cancelled).');
+        monitor.set(dlId, { state: 'installing' });
         const done = await installZip(dir, tmp);
+        monitor.set(dlId, { state: 'done' });
         send('installed', { filename, done });
       } catch (err) {
+        // Cancelling isn't a problem to report in the panel; the app's message still says what happened.
+        if (/cancelled/i.test(err.message)) monitor.remove(dlId);
+        else monitor.set(dlId, { state: 'failed', note: err.message });
         send('installed', { filename, error: err.message });
       } finally {
         rmSync(tmp, { force: true });

@@ -6,7 +6,7 @@
 // It starts the game with piped input/output, appends all output to logFile, and listens on a Windows named pipe for
 // {"token": "...", "command": "..."} lines. It exits when the game exits.
 import { spawn } from 'node:child_process';
-import { createWriteStream } from 'node:fs';
+import { chmodSync, createWriteStream, rmSync } from 'node:fs';
 import net from 'node:net';
 import { timingSafeEqual } from 'node:crypto';
 
@@ -24,6 +24,7 @@ const spec: RunnerSpec = JSON.parse(process.env.TH_RUNNER_SPEC ?? '{}');
 delete process.env.TH_RUNNER_SPEC; // don't pass the token on to the game
 
 const log = createWriteStream(spec.logFile, { flags: 'a' });
+log.on('error', () => {}); // a log problem must never take the runner, and with it the server's console, down
 const stamp = () => new Date().toISOString();
 const note = (msg: string) => log.write(`[runner ${stamp()}] ${msg}\n`);
 
@@ -82,12 +83,16 @@ const server = net.createServer((socket) => {
   });
   socket.on('error', () => {});
 });
-server.listen(spec.pipe, () => note(`Listening for commands.`));
+if (process.platform === 'linux') rmSync(spec.pipe, { force: true });
+server.listen(spec.pipe, () => {
+  if (process.platform === 'linux') chmodSync(spec.pipe, 0o600);
+  note(`Listening for commands.`);
+});
 server.on('error', (err) => note(`Command pipe error: ${err.message}`));
 
 game.on('exit', (code, signal) => {
   note(`Server exited (${signal ?? `code ${code}`}).`);
-  server.close();
+  server.close(); // on Linux this also removes the socket file
   log.end(() => process.exit(code ?? 0));
 });
 game.on('error', (err) => {

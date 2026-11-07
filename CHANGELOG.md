@@ -1,5 +1,38 @@
 # Changelog
 
+## SF Mod Manager 0.7.0
+
+SF Mod Manager now runs on Linux and SteamOS.
+
+**New**
+- **Linux and SteamOS.** Download the `.AppImage` (SteamOS, Arch and most others), the `.deb` (Ubuntu, Debian, Mint) or the `.rpm` (Fedora, openSUSE). The AppImage installs itself into your home folder and your applications menu, so SteamOS updates leave it alone.
+- **Valheim on Linux:** the Valheim tab shows the one launch option to paste into Steam, with a Copy button.
+- **Downloads panel in the mod browser window.** While a mod downloads from CurseForge or Nexus, a small panel in the corner shows its progress, and lets you cancel it or dismiss a failed one.
+
+**Good to know**
+- The Star Valor tab isn't available on Linux yet.
+- On Linux, virus scanning uses ClamAV if it's installed. Without it, mods only get the behaviour scan.
+- Not yet tried on a real Steam Deck. If something doesn't work there, please report it.
+
+## Server Forge 0.10.0
+
+Server Forge now runs on Linux and SteamOS, and can install Steam Workshop mods.
+
+**New**
+- **Linux and SteamOS.** Download the `.AppImage` (SteamOS, Arch and most others), the `.deb` (Ubuntu, Debian, Mint) or the `.rpm` (Fedora, openSUSE). Most servers run natively: Minecraft Bedrock and Java, Valheim, Terraria, tModLoader, Satisfactory, Factorio, Palworld, Project Zomboid and 7 Days to Die. Enshrouded and V Rising run through Wine (not on SteamOS). Space Engineers and Endstone aren't available on Linux. The `.deb` and `.rpm` can also run just the service on a headless machine.
+- **Steam Workshop mods for Project Zomboid and tModLoader.** Paste a Workshop link or ID on the Mods tab. Downloads use your Steam login (the account has to own the game); Server Forge opens SteamCMD's own window to sign in and only keeps the account name.
+- **Project Zomboid has a Mods tab.** It fills in WorkshopItems and Mods for you, and warns about mods made only for Build 41.
+- **tModLoader** picks the newest build of a Workshop mod that works with your server, and names any mods it needs that are missing.
+- **Install button on Workshop pages** in the built-in browser window. It always asks before installing.
+- **Downloads panel in the mod browser window** shows each download's progress, with Cancel.
+
+**Changed**
+- **The Release pill next to the version is gone.** Every version so far has been a beta, so it now just shows Beta. Nothing changes about updates: they come the same way as before. A real Release channel arrives with 1.0.0, and from then on you'll be able to choose Beta updates as well. A one-time notice explains this after you update.
+
+**Good to know**
+- Palworld UE4SS mods don't run on a Linux server (UE4SS is Windows code). The Mods tab warns about it.
+- Not yet tried on a real Steam Deck. If something doesn't work there, please report it.
+
 ## Server Forge 0.9.6
 
 Palworld world settings saved while the server is running now apply.

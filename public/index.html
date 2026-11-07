@@ -443,6 +443,19 @@
               <input type="file" id="addonFile" multiple hidden>
             </label>
             <input type="file" id="addonFolder" webkitdirectory hidden>
+            <div class="addon-workshop" id="addonWorkshop" hidden>
+              <b>Steam Workshop</b>
+              <p class="muted small-text" id="addonWorkshopStatus"></p>
+              <form class="with-button" id="steamLoginForm" hidden>
+                <input id="steamLoginUser" placeholder="Steam account name (it must own this game)" spellcheck="false" autocomplete="off">
+                <button class="primary" type="submit">Sign in to Steam</button>
+              </form>
+              <div class="addon-workshop-actions">
+                <button class="primary" type="button" id="btnBrowseWorkshop" hidden>Browse Steam Workshop</button>
+                <button class="ghost" type="button" id="btnSteamConfirm" hidden>I've signed in</button>
+                <button class="ghost" type="button" id="btnSteamSignOut" hidden>Sign out of Steam</button>
+              </div>
+            </div>
             <form class="with-button" id="addonByIdForm" hidden>
               <input id="addonByIdInput" placeholder="Steam Workshop link or ID, e.g. https://steamcommunity.com/sharedfiles/filedetails/?id=123456789" spellcheck="false" autocomplete="off">
               <button class="primary" type="submit">Add</button>
@@ -650,7 +663,7 @@
               <span class="muted small-text" id="sfInfo"></span>
             </div>
             <div class="browse-list sf-list" id="sfList"></div>
-            <p class="muted small-text">Drop files onto the list to upload them into the open folder. Deleted items go to the Recycle Bin. Some files (world data, configs a running server rewrites) are best changed with the server stopped.</p>
+            <p class="muted small-text">Drop files onto the list to upload them into the open folder. Deleted items go to the Recycle Bin or Trash. Some files (world data, configs a running server rewrites) are best changed with the server stopped.</p>
           </section>
         </div>
       </div>
@@ -787,7 +800,7 @@
             <button class="ghost" id="btnRemoveNexusKey">Remove</button>
           </div>
           <p class="muted small-text" id="nexusKeyStatus"></p>
-          <p class="muted">Factorio: the Windows server is the full game, so installing and updating Factorio servers (and downloading mods from the mod portal) needs a factorio.com account that owns the game.
+          <p class="muted">Factorio: on Windows the server is the full game, so installing and updating Factorio servers (and on any system, downloading mods from the mod portal) needs a factorio.com account that owns the game.
             Paste your username and token from <a href="https://factorio.com/profile" target="_blank" rel="noopener">factorio.com/profile</a>, or import the login the game saved on this PC.
             It's checked with factorio.com and stored only on this system.</p>
           <div class="with-button">
@@ -903,6 +916,20 @@
     </section>
     </div>
     <div class="rebrand-footer"><p id="rebrandCountdown" role="status">Please take a moment to read about the new name.</p><button type="button" class="primary" id="rebrandContinue" disabled>Continue in 10 seconds</button></div>
+  </div>
+</dialog>
+
+<dialog id="channelNoticeDialog" aria-labelledby="channelNoticeTitle">
+  <div class="dialog-body">
+    <h2 id="channelNoticeTitle">Why the Release pill is gone</h2>
+    <p>Next to the version number, Server Forge used to show two pills: <span class="build-badge release-old">Release</span> and <span class="build-badge beta">Beta</span>. Now it only shows <span class="build-badge beta">Beta</span>.</p>
+    <ul class="channel-notice">
+      <li><b>Every version so far has been a beta.</b> The Release pill only meant "this is the installed copy, not a test copy", but it looked like a finished, stable release. Server Forge hasn't reached 1.0.0 yet, so that was misleading.</li>
+      <li><b>Nothing changes for you.</b> Updates keep coming the same way and from the same place as before. The Beta channel is the one you've been on all along.</li>
+      <li><b>Release arrives with 1.0.0.</b> From then on, updates come from the Release channel by default, and you can choose to get Beta updates too.</li>
+      <li>The same goes for SF Mod Manager.</li>
+    </ul>
+    <div class="form-actions"><div class="spacer"></div><button class="primary" id="channelNoticeClose">Got it</button></div>
   </div>
 </dialog>
 
@@ -1035,7 +1062,7 @@
     <label class="toggle"><input type="checkbox" id="delBackups"> Also delete its backups</label>
     <p class="muted" id="delBackupInfo"></p>
     <div id="delConfirmBox" hidden>
-      <p class="warn-text">Deleted files go to the Recycle Bin, where you can get them back until it is emptied. Type the server name to confirm.</p>
+      <p class="warn-text">Deleted files go to the Recycle Bin or Trash, where you can get them back until it is emptied. Type the server name to confirm.</p>
       <input id="delConfirm" autocomplete="off" spellcheck="false">
     </div>
     <p class="error" id="deleteError"></p>
@@ -1198,6 +1225,7 @@
   </div>
 </dialog>
 
+<div id="downloadTray" hidden></div>
 <div id="toast"></div>
 </body>
 </html>

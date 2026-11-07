@@ -4,6 +4,7 @@ import { readdirSync, statSync, existsSync, mkdirSync, renameSync, readFileSync,
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
+import { isLinux, moveToTrash } from './platform/host.ts';
 
 const execFileAsync = promisify(execFile);
 const MAX_ENTRIES = 5000;
@@ -148,6 +149,7 @@ export async function remove(root: string, rel: string) {
   const target = resolveIn(root, rel);
   if (target === path.resolve(root)) throw new Error("The server folder itself can't be deleted here.");
   if (!existsSync(target)) throw new Error('That item no longer exists.');
+  if (isLinux) return moveToTrash(target);
   const isDir = statSync(target).isDirectory();
   const script =
     'Add-Type -AssemblyName Microsoft.VisualBasic; ' +

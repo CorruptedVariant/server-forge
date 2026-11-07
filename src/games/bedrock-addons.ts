@@ -2,13 +2,15 @@
 // world's world_behavior_packs.json / world_resource_packs.json (pack UUID + version), which is what makes the world
 // load them. Updating a pack replaces its folder and bumps the version in those files; removing undoes both.
 import { existsSync, readFileSync, writeFileSync, readdirSync, statSync, mkdirSync, cpSync, rmSync, copyFileSync } from 'node:fs';
+import { isLinux } from '../platform/host.ts';
+import { unzipFile } from '../platform/archive.ts';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import os from 'node:os';
 import { readWorldSettings } from './bedrock-world.ts';
-import { defenderScan } from '../modscan.ts';
+import { defenderScan, SCANNER } from '../modscan.ts';
 
 const execFileAsync = promisify(execFile);
 
@@ -113,6 +115,7 @@ function compareVersions(a: number[], b: number[]) {
 
 async function unzip(zip: string, dest: string) {
   try {
+    if (isLinux) return await unzipFile(zip, dest);
     await execFileAsync(
       'powershell.exe',
       ['-NoProfile', '-NonInteractive', '-Command', 'Add-Type -AssemblyName System.IO.Compression.FileSystem; [IO.Compression.ZipFile]::ExtractToDirectory($env:TH_SRC, $env:TH_DEST)'],
@@ -489,7 +492,7 @@ export async function installAddonFile(installDir: string, level: string, file: 
     // Windows Defender first: a detection stops the install.
     if (!statSync(file).isDirectory()) {
       const scan = await defenderScan(file);
-      if (scan.result === 'threat') throw new Error(`Not installed: Windows Defender found ${scan.threat} in ${path.basename(file)}.`);
+      if (scan.result === 'threat') throw new Error(`Not installed: ${SCANNER} found ${scan.threat} in ${path.basename(file)}.`);
     }
     const top = path.join(work, 'top');
     if (statSync(file).isDirectory()) cpSync(file, top, { recursive: true });

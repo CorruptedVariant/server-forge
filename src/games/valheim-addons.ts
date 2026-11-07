@@ -5,7 +5,7 @@ import path from 'node:path';
 import type { AddonSupport, ServerRecord } from './types.ts';
 import { dataPath } from '../store.ts';
 import * as vm from '../valheim-mods.ts';
-import { scanPackage } from '../modscan.ts';
+import { scanPackage, noScannerIsNormal } from '../modscan.ts';
 import { nexusFromFileName } from '../nexus.ts';
 import { activeIsVanilla } from './valheim-profiles.ts';
 import { listSettingsFiles, readSettings, writeSettings, sharedSettings } from './valheim-settings.ts';
@@ -32,7 +32,7 @@ function safetyCheck(warnings: string[]): vm.InstallOptions['check'] {
     const r = await scanPackage(zipFile, { fullName: `${pkg.namespace}-${pkg.name}`, thunderstoreActive: status.active, deprecated: status.deprecated });
     if (r.verdict === 'blocked') throw new Error(`Not installed: ${pkg.name} ${pkg.version}. ${r.summary}.`);
     for (const f of r.flags) warnings.push(`${f.level === 'high' ? '⛔ Safety check' : '⚠ Safety check'}: ${pkg.name}: ${f.text}${f.file ? ` (${f.file})` : ''}.`);
-    if (r.defender === 'unavailable' || r.defender === 'error') warnings.push(`⚠ ${pkg.name}: Windows Defender couldn't scan it (another antivirus may be in charge).`);
+    if (!noScannerIsNormal && (r.defender === 'unavailable' || r.defender === 'error')) warnings.push(`⚠ ${pkg.name}: Windows Defender couldn't scan it (another antivirus may be in charge).`);
   };
 }
 

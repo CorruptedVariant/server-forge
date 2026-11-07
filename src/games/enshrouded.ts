@@ -100,6 +100,7 @@ export const enshrouded: GameModule = {
   id: 'enshrouded',
   name: 'Enshrouded',
   processName: EXE,
+  linux: 'wine',
 
   fields: [
     { key: 'serverName', label: 'Server name', type: 'text', help: 'Shown in the in-game server list.', restart: true },
@@ -193,5 +194,5 @@ export const enshrouded: GameModule = {
 
   backup: { sources: (record) => ({ base: record.installDir, include: ['savegame', CONFIG].filter((p) => existsSync(path.join(record.installDir, p))), world: 'savegame' }) },
 
-  install: (record, job) => steamInstall(record, job, STEAM_APPS.enshrouded, EXE, 'Enshrouded'),
+  install: (record, job) => steamInstall(record, job, STEAM_APPS.enshrouded, EXE, 'Enshrouded', { windowsBuild: true }),
 };

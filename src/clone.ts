@@ -3,6 +3,7 @@
 // is running, its world is taken with the game's safe live-backup method (Bedrock save hold / Java save-off), so the
 // live server isn't disturbed; everything else is copied file by file (files the server keeps locked are skipped).
 import { existsSync, readdirSync, rmSync, mkdirSync } from 'node:fs';
+import { exampleFolder } from './platform/host.ts';
 import { readdir, stat, copyFile, mkdir } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
@@ -81,7 +82,7 @@ export function cloneServer(sourceId: string, input: { name: string; installDir:
   const name = String(input.name ?? '').trim();
   const dest = path.resolve(String(input.installDir ?? '').trim());
   if (!name || name.length > 60) throw new Error('Give the copy a name (up to 60 characters).');
-  if (!path.isAbsolute(String(input.installDir ?? '').trim())) throw new Error('Choose a full folder path for the copy, e.g. C:\\GameServers\\My Server (test)');
+  if (!path.isAbsolute(String(input.installDir ?? '').trim())) throw new Error(`Choose a full folder path for the copy, e.g. ${exampleFolder('My Server (test)')}`);
   if (existsSync(dest) && readdirSync(dest).length) throw new Error('That folder is not empty. Choose a new or empty folder.');
   if (inside(dest, source.record.installDir) || inside(source.record.installDir, dest)) throw new Error("The copy can't go inside the original's folder (or around it).");
   if (listInstances().some((i) => inside(dest, i.record.installDir) || inside(i.record.installDir, dest))) throw new Error('Another server already uses that folder.');

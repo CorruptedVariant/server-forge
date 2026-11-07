@@ -142,3 +142,10 @@
   .neon *, .neon *::before, .neon *::after { animation: none !important; transition: none !important; }
   .neon .game-tabs button.active::before, .neon .profile-chip.active::before { background: color-mix(in srgb, var(--accent) 55%, transparent); }
 }
+
+/* Mod downloads panel */
+.neon #downloadTray { border-radius: 14px; background: #101621cc; backdrop-filter: blur(14px); border-color: #ffffff22; box-shadow: 0 8px 32px #0009, 0 0 18px color-mix(in srgb, var(--accent, #3b82f6) 25%, transparent); }
+.neon .download-bar { background: #ffffff14; }
+.neon .download-bar i { background: linear-gradient(90deg, var(--accent, #3b82f6), color-mix(in srgb, var(--accent, #3b82f6) 55%, #fff)); box-shadow: 0 0 8px var(--accent, #3b82f6); }
+.neon .download-bar.busy i { width: 35%; opacity: 1; animation: download-slide 1.4s ease-in-out infinite alternate; }
+@keyframes download-slide { from { margin-left: 0; } to { margin-left: 65%; } }

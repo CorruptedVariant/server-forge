@@ -1,4 +1,6 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { linuxDoorstopEnv } from '../valheim-mods.ts';
+import { bin, exampleFolder, isLinux } from '../platform/host.ts';
 import path from 'node:path';
 import type { GameModule, LogParser, LogState, Player, ServerRecord, Settings } from './types.ts';
 import { readWorldInfo } from './valheim-world.ts';
@@ -6,7 +8,7 @@ import { steamAppUpdate } from '../steamcmd.ts';
 import { valheimAddons } from './valheim-addons.ts';
 import * as vm from '../valheim-mods.ts';
 
-const EXE = 'valheim_server.exe';
+const EXE = bin('valheim_server.exe', 'valheim_server.x86_64');
 const STEAM_APP_ID = '892970'; // Valheim (the game), which the dedicated server expects in its environment
 const VALHEIM_SERVER_APP_ID = 896660; // "Valheim Dedicated Server" on Steam, installable anonymously via SteamCMD
 
@@ -281,7 +283,7 @@ export const valheim: GameModule = {
     if (password && password.length < 5) throw new Error('Password must be at least 5 characters.');
     if (password && serverName.toLowerCase().includes(password.toLowerCase())) throw new Error('Password cannot be part of the server name.');
     if (isPublic && !password) throw new Error('Public servers need a password.');
-    if (!path.isAbsolute(dir)) throw new Error('Save folder must be a full path, e.g. C:\\GameServers\\valheim\\saves');
+    if (!path.isAbsolute(dir)) throw new Error(`Save folder must be a full path, e.g. ${exampleFolder('valheim', 'saves')}`);
     const modifiers: Settings = {};
     for (const m of MODIFIERS) {
       const v = String(s[m.key] ?? '');
@@ -353,7 +355,9 @@ export const valheim: GameModule = {
     if (s.instanceId) args.push('-instanceid', String(s.instanceId));
     if (s.extraArgs) args.push(...splitArgs(String(s.extraArgs)));
     mkdirSync(saveDir(record), { recursive: true });
-    return { exe: path.join(record.installDir, EXE), args, cwd: record.installDir, env: { SteamAppId: STEAM_APP_ID } };
+    // On Linux there's no winhttp.dll to load BepInEx: Doorstop comes in through the environment, as in its start_server_bepinex.sh.
+    const env = isLinux ? { SteamAppId: STEAM_APP_ID, LD_LIBRARY_PATH: './linux64', ...linuxDoorstopEnv(record.installDir) } : { SteamAppId: STEAM_APP_ID };
+    return { exe: path.join(record.installDir, EXE), args, cwd: record.installDir, env };
   },
 
   createParser: createValheimParser,

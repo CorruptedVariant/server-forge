@@ -6,6 +6,8 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import os from 'node:os';
+import { readFileSync, readdirSync } from 'node:fs';
+import { isLinux } from './platform/host.ts';
 import { readJson, writeJson } from './store.ts';
 
 const INTERVAL_S = 3;
@@ -141,7 +143,38 @@ function onSample(line: string) {
   lastAt = at;
 }
 
+/** One sample in the sampler's format, from /proc. CPU time is in clock ticks (100 a second), converted to 100 ns units. */
+function linuxSample(): string {
+  const page = 4096;
+  const parts: string[] = [];
+  for (const name of readdirSync('/proc')) {
+    if (!/^\d+$/.test(name)) continue;
+    try {
+      const stat = readFileSync(`/proc/${name}/stat`, 'latin1');
+      const close = stat.lastIndexOf(')'); // the program's name is in brackets and may contain spaces
+      const f = stat.slice(close + 2).split(' ');
+      parts.push(`${name},${f[1]},${(Number(f[11]) + Number(f[12])) * 100_000},${Number(f[21]) * page},${stat.slice(stat.indexOf('(') + 1, close).replace(/[,;]/g, '')}`);
+    } catch {} // it exited while we looked
+  }
+  return parts.join(';');
+}
+
+let linuxTimer: NodeJS.Timeout | null = null;
+
 function startSampler() {
+  if (isLinux) {
+    if (linuxTimer) return;
+    lastAt = 0;
+    const tick = () => {
+      try {
+        onSample(linuxSample());
+      } catch {}
+    };
+    tick();
+    linuxTimer = setInterval(tick, INTERVAL_S * 1000);
+    linuxTimer.unref();
+    return;
+  }
   if (sampler) return;
   const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', SCRIPT], { windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
   sampler = child;
@@ -157,6 +190,8 @@ function startSampler() {
 }
 
 function stopSampler() {
+  if (linuxTimer) clearInterval(linuxTimer);
+  linuxTimer = null;
   sampler?.kill();
   sampler = null;
 }

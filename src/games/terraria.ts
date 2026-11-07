@@ -4,17 +4,21 @@
 // commands from a real console (piped input is ignored), so Server Forge types them in (scripts/send-console-input.ps1),
 // and reads tModLoader's own log (tModLoader-Logs/server.log) for the Console tab.
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, rmSync, cpSync, renameSync, statSync } from 'node:fs';
+import { bin, isLinux } from '../platform/host.ts';
 import { createHash, randomBytes } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
-import { downloadFile, extractZip } from '../download.ts';
+import { inflateRawSync } from 'node:zlib';
+import { downloadFile, extractTar, extractZip } from '../download.ts';
 import type { GameModule, LogParser, LogState, ServerRecord, Settings, AddonSupport } from './types.ts';
 import type { Job } from '../jobs.ts';
+import { workshopDownload } from '../steamcmd.ts';
+import { workshopId, workshopTitle } from '../workshop.ts';
 
 const RELEASES = 'https://api.github.com/repos/tModLoader/tModLoader/releases/latest';
 const VERSION_FILE = '.tavernhost-version';
 const CONFIG_FILE = 'tavernhost-serverconfig.txt';
-const DOTNET = (dir: string) => path.join(dir, 'dotnet', 'dotnet.exe');
+const DOTNET = (dir: string) => path.join(dir, 'dotnet', bin('dotnet.exe', 'dotnet'));
 
 export const SIZES = [
   { value: '1', label: 'Small (4200 × 1200)' },
@@ -78,8 +82,8 @@ async function ensureDotnet(installDir: string, note: (m: string) => void) {
   const work = path.join(os.tmpdir(), `tavernhost-dotnet-${randomBytes(4).toString('hex')}`);
   mkdirSync(work, { recursive: true });
   try {
-    const zip = path.join(work, 'dotnet.zip');
-    const name = `dotnet-runtime-${version}-win-x64.zip`;
+    const zip = path.join(work, isLinux ? 'dotnet.tar.gz' : 'dotnet.zip');
+    const name = isLinux ? `dotnet-runtime-${version}-linux-x64.tar.gz` : `dotnet-runtime-${version}-win-x64.zip`;
     let last: Error | null = null;
     for (const base of ['https://builds.dotnet.microsoft.com/dotnet/Runtime', 'https://dotnetcli.azureedge.net/dotnet/Runtime']) {
       try {
@@ -92,7 +96,8 @@ async function ensureDotnet(installDir: string, note: (m: string) => void) {
     }
     if (last) throw new Error(`Couldn't download .NET ${version}: ${last.message}`);
     rmSync(path.join(installDir, 'dotnet'), { recursive: true, force: true });
-    await extractZip(zip, path.join(installDir, 'dotnet'));
+    if (isLinux) await extractTar(zip, path.join(installDir, 'dotnet'));
+    else await extractZip(zip, path.join(installDir, 'dotnet'));
     if (!existsSync(DOTNET(installDir))) throw new Error('The .NET runtime download looked wrong (no dotnet.exe).');
     note(`.NET ${version} is ready.`);
   } finally {
@@ -137,7 +142,7 @@ export function createTerrariaParser(): LogParser {
   return {
     feed(line) {
       // "[15:04:58.896] [Main Thread/INFO] [StatusText]: Server started" → the message after the last "]: ".
-      const msg = line.includes(']: ') ? line.slice(line.lastIndexOf(']: ') + 3).trim() : line.trim();
+      const msg = line.includes(']: ') ? line.slice(line.lastIndexOf(']: ') + 3).trim() : line.trim().replace(/^(: )+/, ''); // piped output has the server's ': ' prompt in front
       let m: RegExpExecArray | null;
       if (/^Server started$/.test(msg)) st.ready = true;
       else if ((m = /^Terraria Server v(\S+)/.exec(msg))) st.version = tml ? `${m[1]} (tModLoader ${tml})` : m[1];
@@ -184,12 +189,89 @@ function installedMod(record: ServerRecord, id: string): string {
   return file;
 }
 
+const TML_GAME_APP = 1281930; // tModLoader on Steam: Workshop items belong to it
+
+/**
+ * The .tmod to use from a downloaded Workshop item. Items keep one build per tModLoader version (2026.1\\Mod.tmod ...),
+ * and the newest one not newer than this server's tModLoader is the one that loads.
+ */
+function pickTmod(dir: string, serverVersion: string | null): string {
+  const parts = (v: string) => (/\d+(\.\d+)*/.exec(v)?.[0] ?? '').split('.').slice(0, 2).map(Number);
+  const newer = (a: number[], b: number[]) => (a[0] - b[0] || (a[1] ?? 0) - (b[1] ?? 0)) > 0;
+  const builds = readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
+    if (e.isFile() && e.name.toLowerCase().endsWith('.tmod')) return [{ file: path.join(dir, e.name), version: [0, 0] }];
+    if (!e.isDirectory() || !/^\d+\.\d+/.test(e.name)) return [];
+    const sub = path.join(dir, e.name);
+    return readdirSync(sub).filter((f) => f.toLowerCase().endsWith('.tmod')).map((f) => ({ file: path.join(sub, f), version: parts(e.name) }));
+  });
+  if (!builds.length) throw new Error("That Workshop item has no .tmod file. It may be a resource pack or something else that isn't a tModLoader mod.");
+  const server = serverVersion ? parts(serverVersion) : null;
+  const usable = server ? builds.filter((b) => !newer(b.version, server)) : builds;
+  if (!usable.length) throw new Error(`That mod only has builds for newer tModLoader versions than this server's (${serverVersion}). Update the server first.`);
+  return usable.sort((a, b) => (newer(a.version, b.version) ? -1 : 1))[0].file;
+}
+
+/**
+ * The mods a .tmod can't load without. A .tmod is: "TMOD", the tModLoader version, a 20-byte hash, a 256-byte signature,
+ * the data length, its name and version, then a file table and the files. Its Info file lists "modReferences". Best
+ * effort: anything unexpected returns [] and tModLoader's log still names what's missing.
+ */
+function tmodRequires(file: string): string[] {
+  try {
+    const b = readFileSync(file);
+    let at = 4;
+    const str = (buf: Buffer) => {
+      let len = 0;
+      for (let shift = 0; ; shift += 7) {
+        const byte = buf[at++];
+        len |= (byte & 0x7f) << shift;
+        if (!(byte & 0x80)) break;
+      }
+      at += len;
+      return buf.toString('utf-8', at - len, at);
+    };
+    if (b.toString('latin1', 0, 4) !== 'TMOD') return [];
+    str(b);
+    at += 20 + 256 + 4;
+    str(b);
+    str(b);
+    const count = b.readInt32LE(at);
+    at += 4;
+    const files = [];
+    for (let i = 0; i < count; i++) {
+      const name = str(b);
+      files.push({ name, length: b.readInt32LE(at), stored: b.readInt32LE(at + 4) });
+      at += 8;
+    }
+    for (const f of files) {
+      if (f.name === 'Info') {
+        const raw = b.subarray(at, at + f.stored);
+        const info = f.stored < f.length ? inflateRawSync(raw) : raw;
+        const refs: string[] = [];
+        at = 0;
+        while (at < info.length) {
+          const tag = str(info);
+          if (tag === 'modReferences') {
+            for (let r = str(info); r; r = str(info)) refs.push(r.split('@')[0]);
+            return refs;
+          }
+          // Lists of names end with an empty string; other tags here hold a single value or nothing.
+          if (tag.endsWith('References') || tag === 'sortAfter' || tag === 'sortBefore') while (str(info));
+          else if (/^(author|version|displayName|homepage|description|modSide|eacPath|buildVersion)$/.test(tag)) str(info);
+        }
+        return refs;
+      }
+      at += f.stored;
+    }
+  } catch {}
+  return [];
+}
+
 const terrariaAddons: AddonSupport = {
   accept: '.tmod',
-  labels: () => ({ tab: 'Mods', noun: 'mod', plural: 'mods', dropHelp: 'Add tModLoader mods as <b>.tmod</b> files. Players’ games download the server’s mods by themselves when they join.' }),
-  links: [
-    { label: 'Steam Workshop', url: 'https://steamcommunity.com/app/1281930/workshop/', help: 'tModLoader mods. Subscribe in Steam, then add the .tmod file from your tModLoader Mods folder (Documents\\My Games\\Terraria\\tModLoader\\Mods).' },
-  ],
+  labels: () => ({ tab: 'Mods', noun: 'mod', plural: 'mods', dropHelp: 'Get mods from the Steam Workshop below, or add <b>.tmod</b> files. Players’ games download the server’s mods by themselves when they join. Restart the server to apply.' }),
+  links: [],
+  workshop: { url: 'https://steamcommunity.com/app/1281930/workshop/', needsLogin: true },
   list(record) {
     const dir = modsDir(record);
     if (!existsSync(dir)) return [];
@@ -207,6 +289,22 @@ const terrariaAddons: AddonSupport = {
     writeEnabled(record, [...readEnabled(record), name]);
     return { installed: [{ name, action: 'installed', source }], warnings: [] };
   },
+  async addById(record, input) {
+    const id = workshopId(input);
+    await workshopTitle(id, TML_GAME_APP, 'tModLoader');
+    const { root, dir } = await workshopDownload(TML_GAME_APP, id, 'tModLoader');
+    try {
+      const file = pickTmod(dir, installedTmlVersion(record.installDir));
+      const { installed } = await terrariaAddons.install(record, file, 'Steam Workshop');
+      const have = new Set((terrariaAddons.list(record) as { id: string }[]).map((m) => m.id));
+      const missing = tmodRequires(file).filter((m) => !have.has(m));
+      const warnings = ['Restart the server to load it.'];
+      if (missing.length) warnings.push(`It needs ${missing.join(', ')}, or tModLoader will switch it off. Add ${missing.length === 1 ? 'that mod' : 'those mods'} too (on its Workshop page: Required Items).`);
+      return { installed, warnings };
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
   remove(record, id) {
     rmSync(installedMod(record, id), { force: true });
     writeEnabled(record, readEnabled(record).filter((n) => n !== id));
@@ -221,7 +319,7 @@ const terrariaAddons: AddonSupport = {
 export const terraria: GameModule = {
   id: 'terraria',
   name: 'Terraria (tModLoader)',
-  processName: 'dotnet.exe',
+  processName: bin('dotnet.exe', 'dotnet'),
 
   fields: [
     { key: 'world', label: 'World name', type: 'text', help: 'Created automatically the first time (with the size and difficulty below).', restart: true },

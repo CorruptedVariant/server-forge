@@ -3,7 +3,7 @@
 // downloads the installer itself and runs it on this system (desktop/main.js).
 
 const REPO = 'Volatile111/server-forge';
-const ASSET = /^(?:Server-Forge|Tavern-Host)-Setup-(\d+\.\d+\.\d+)\.exe$/;
+const ASSET = process.platform === 'linux' ? /^Server-Forge-(\d+\.\d+\.\d+)-x86_64\.AppImage$/ : /^(?:Server-Forge|Tavern-Host)-Setup-(\d+\.\d+\.\d+)\.exe$/;
 const EVERY = 6 * 3600_000;
 
 export interface AppRelease {

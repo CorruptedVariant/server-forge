@@ -15,7 +15,9 @@ import { createHash, randomUUID } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import type { AddonSupport, ServerRecord } from './types.ts';
-import { defenderScan } from '../modscan.ts';
+import { defenderScan, SCANNER } from '../modscan.ts';
+import { workshopDownload } from '../steamcmd.ts';
+import { workshopId, workshopTitle } from '../workshop.ts';
 import { unzipTo, zipFolder } from '../backups.ts';
 import { dataPath } from '../store.ts';
 import { filesIn, findPackages, infoProblem, isUe4ssDep, palSide, readInfo, UE4SS_URL, wrapLegacyPaks, wrapLuaMods, wrapUe4ss, type PalInfo } from '../modsync/palworld-pkg.ts';
@@ -133,7 +135,7 @@ export async function unpackMods(file: string): Promise<{ work: string; dirs: st
       cpSync(file, path.join(top, path.basename(file)));
     } else if (/\.zip$/i.test(file)) {
       const scan = await defenderScan(file);
-      if (scan.result === 'threat') throw new Error(`Not installed: Windows Defender found ${scan.threat} in ${path.basename(file)}.`);
+      if (scan.result === 'threat') throw new Error(`Not installed: ${SCANNER} found ${scan.threat} in ${path.basename(file)}.`);
       try {
         await unzipTo(file, top);
       } catch {
@@ -224,6 +226,8 @@ export async function palSharedZip(record: ServerRecord, name: string): Promise<
 
 // ---------- the Mods tab ----------
 
+const PALWORLD_GAME_APP = 1623730; // the game itself: Workshop items belong to it
+
 export const palworldAddons: AddonSupport = {
   accept: '.zip,.pak',
   folders: true,
@@ -241,6 +245,20 @@ export const palworldAddons: AddonSupport = {
     { label: 'CurseForge', url: 'https://www.curseforge.com/palworld', help: 'Palworld mods on CurseForge.' },
     { label: 'Nexus Mods', url: 'https://www.nexusmods.com/games/palworld/mods', help: 'Use "Manual download", or "Mod Manager Download" with your Nexus API key.' },
   ],
+  workshop: { url: 'https://steamcommunity.com/app/1623730/workshop/', needsLogin: true },
+  async addById(record, input) {
+    const id = workshopId(input);
+    await workshopTitle(id, PALWORLD_GAME_APP, 'Palworld');
+    const { root, dir } = await workshopDownload(PALWORLD_GAME_APP, id, 'Palworld');
+    try {
+      const scan = await defenderScan(dir);
+      if (scan.result === 'threat') throw new Error(`Not installed: ${SCANNER} found ${scan.threat} in that mod.`);
+      // From the folder above the item's, so the mod keeps its Workshop ID as its folder name.
+      return await palworldAddons.install(record, path.dirname(dir), 'Steam Workshop') as { installed: unknown[]; warnings: string[] };
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
   isOn: (record) => readModSettings(settingsFile(record)).enabled,
   async setup(record, log) {
     const s = readModSettings(settingsFile(record));
@@ -284,6 +302,7 @@ export const palworldAddons: AddonSupport = {
         const deps = (info.Dependencies ?? []).map(String);
         const ue4ssDep = deps.some(isUe4ssDep);
         const missing = deps.filter((d) => !isUe4ssDep(d) && !have.has(d));
+        if (process.platform === 'linux' && info.InstallRule.some((r) => r.Type === 'UE4SS' && r.IsServer !== false) && side !== 'players') warnings.push({ level: 'error', text: "Palworld's Linux server can't run UE4SS mods: UE4SS here is Windows code. It won't do anything on this server. Players can still use it if it's a mod for their games." });
         if (missing.length) warnings.push({ level: 'error', text: `Needs ${missing.join(', ')}, which ${missing.length === 1 ? "isn't" : "aren't"} installed.` });
         // A players-only mod runs in the players' games, which get UE4SS through the share link once it's installed here.
         if (ue4ssDep && side === 'players' && !hasUe4ss) warnings.push({ level: 'warn', text: `Players need UE4SS for this. Download UE4SS-Palworld.zip from ${UE4SS_URL} and drop it here: players get it through the share link.` });

@@ -5,6 +5,7 @@
 // (Files tab), with the game preset chosen here. RCON is switched on (this system only) so countdowns can warn players
 // in the game. Stop is Ctrl+C (the server saves and shuts down).
 import { existsSync, mkdirSync, readFileSync, writeFileSync, copyFileSync } from 'node:fs';
+import { winePath } from '../platform/host.ts';
 import path from 'node:path';
 import type { GameModule, LogParser, LogState, ServerRecord, Settings } from './types.ts';
 import { STEAM_APPS, num, bool, text, newPassword, steamInstall } from './steam-games.ts';
@@ -104,6 +105,7 @@ export const vrising: GameModule = {
   id: 'vrising',
   name: 'V Rising',
   processName: EXE,
+  linux: 'wine',
 
   fields: [
     { key: 'serverName', label: 'Server name', type: 'text', restart: true },
@@ -169,7 +171,7 @@ export const vrising: GameModule = {
 
   launch: (record) => ({
     exe: path.join(record.installDir, EXE),
-    args: ['-persistentDataPath', path.join(record.installDir, DATA), '-logFile', path.join(record.installDir, 'logs', 'VRisingServer.log')],
+    args: ['-persistentDataPath', winePath(path.join(record.installDir, DATA)), '-logFile', winePath(path.join(record.installDir, 'logs', 'VRisingServer.log'))],
     cwd: record.installDir,
     env: { SteamAppId: '1604030' },
   }),
@@ -190,5 +192,5 @@ export const vrising: GameModule = {
 
   backup: { sources: (record) => ({ base: path.join(record.installDir, DATA), include: ['Saves', 'Settings'].filter((p) => existsSync(path.join(record.installDir, DATA, p))), world: 'Saves' }) },
 
-  install: (record, job) => steamInstall(record, job, STEAM_APPS.vrising, EXE, 'V Rising'),
+  install: (record, job) => steamInstall(record, job, STEAM_APPS.vrising, EXE, 'V Rising', { windowsBuild: true }),
 };

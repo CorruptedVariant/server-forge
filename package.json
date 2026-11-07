@@ -1,7 +1,7 @@
 {
   "name": "tavern-host",
   "productName": "Server Forge",
-  "version": "0.9.6",
+  "version": "0.10.0",
   "description": "Server Forge: a control panel for hosting and managing game servers.",
   "author": "CorruptedVariant",
   "private": true,
@@ -21,7 +21,9 @@
     "client": "tsc -p tsconfig.build.json && electron companion",
     "dist:client": "npm run snapshot && tsc -p tsconfig.build.json && electron-builder --config companion/builder.json --win nsis && node tools/forge-release-assets.mjs client",
     "release": "npm run dist && node tools/publish-release.mjs host",
-    "release:client": "npm run dist:client && node tools/publish-release.mjs client"
+    "release:client": "npm run dist:client && node tools/publish-release.mjs client",
+    "dist:linux": "tsc -p tsconfig.build.json && electron-builder --linux AppImage deb rpm --x64",
+    "dist:client:linux": "tsc -p tsconfig.build.json && electron-builder --config companion/builder.json --linux AppImage deb rpm --x64"
   },
   "devDependencies": {
     "@types/node": "^26.6.2",
@@ -64,6 +66,26 @@
       "license": "LICENSE",
       "artifactName": "Server-Forge-Setup-${version}.exe"
     },
-    "publish": null
-  }
+    "publish": null,
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb",
+        "rpm"
+      ],
+      "icon": "desktop/icon.png",
+      "executableName": "server-forge",
+      "category": "Game",
+      "maintainer": "CorruptedVariant <75761168+Volatile111@users.noreply.github.com>",
+      "artifactName": "Server-Forge-${version}-${arch}.${ext}",
+      "synopsis": "A control panel for hosting and managing game servers"
+    },
+    "rpm": {
+      "fpm": [
+        "--rpm-rpmbuild-define",
+        "_build_id_links none"
+      ]
+    }
+  },
+  "homepage": "https://github.com/Volatile111/server-forge"
 }

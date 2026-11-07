@@ -8,6 +8,7 @@ import { existsSync, readFileSync, writeFileSync, readdirSync, statSync, mkdirSy
 import { createHmac, randomBytes } from 'node:crypto';
 import path from 'node:path';
 import { steamAppUpdate } from '../steamcmd.ts';
+import { workshopId, workshopTitle } from '../workshop.ts';
 import type { GameModule, LogParser, LogState, ServerRecord, Settings, AddonSupport } from './types.ts';
 
 export const SPACE_ENGINEERS_APP = 298740;
@@ -185,21 +186,6 @@ function writeMods(record: ServerRecord, mods: WorkshopMod[]) {
   writeFileSync(cfgFile(record), setElement(readCfg(record), 'MyConfigDedicated', 'Mods', inner ? `${inner}\r\n  ` : ''));
 }
 
-/** A Workshop item's title (and that it's a Space Engineers item), from Steam's public API. */
-async function workshopTitle(id: string): Promise<string> {
-  const res = await fetch('https://api.steampowered.com/ISteamRemoteStorage/GetPublishedFileDetails/v1/', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: `itemcount=1&publishedfileids%5B0%5D=${id}`,
-    signal: AbortSignal.timeout(15_000),
-  });
-  const d = (await res.json()) as { response?: { publishedfiledetails?: { result: number; title?: string; consumer_app_id?: number }[] } };
-  const item = d.response?.publishedfiledetails?.[0];
-  if (!item || item.result !== 1) throw new Error(`Steam doesn't know Workshop item ${id} (or it's private).`);
-  if (item.consumer_app_id && item.consumer_app_id !== SE_GAME_APP) throw new Error(`Workshop item ${id} isn't a Space Engineers mod.`);
-  return item.title || id;
-}
-
 const seAddons: AddonSupport = {
   accept: '',
   readOnly: false,
@@ -209,17 +195,18 @@ const seAddons: AddonSupport = {
     plural: 'mods',
     dropHelp: 'Add Steam Workshop mods by their ID or link (below). The server downloads them when it starts, and players’ games download them by themselves when they join. Restart the server to apply changes.',
   }),
-  links: [{ label: 'Steam Workshop', url: 'https://steamcommunity.com/app/244850/workshop/', help: 'Space Engineers mods. Copy a mod’s link and paste it below.' }],
+  links: [],
+  // The server downloads these itself, so no Steam sign-in.
+  workshop: { url: 'https://steamcommunity.com/app/244850/workshop/', needsLogin: false },
   list: (record) => readMods(record).map((m, i) => ({ id: m.id, name: m.name, enabled: true, source: 'Steam Workshop', version: '', type: 'mod', typeLabel: 'Workshop mod', typeClass: 'behavior', url: `https://steamcommunity.com/sharedfiles/filedetails/?id=${m.id}`, priority: i })),
   async install() {
     throw new Error('Add Space Engineers mods by their Workshop ID or link.');
   },
   async addById(record, input) {
-    const id = /(?:[?&]id=|^)(\d{6,12})\b/.exec(String(input ?? '').trim())?.[1];
-    if (!id) throw new Error('Paste a Steam Workshop link or ID (e.g. https://steamcommunity.com/sharedfiles/filedetails/?id=123456789).');
+    const id = workshopId(input);
     const mods = readMods(record);
     if (mods.some((m) => m.id === id)) throw new Error('That mod is already on the list.');
-    const name = await workshopTitle(id);
+    const name = await workshopTitle(id, SE_GAME_APP, 'Space Engineers');
     writeMods(record, [...mods, { id, name }]);
     return { installed: [{ name, action: 'installed' }], warnings: ['Restart the server to load it.'] };
   },
@@ -245,6 +232,7 @@ export const spaceEngineers: GameModule = {
   id: 'spaceengineers',
   name: 'Space Engineers',
   processName: 'SpaceEngineersDedicated.exe',
+  linux: 'unavailable',
 
   fields: [
     { key: 'serverName', label: 'Server name', type: 'text', help: 'Shown in the server list.', restart: true },

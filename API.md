@@ -1,6 +1,6 @@
 # Tavern Host HTTP API
 
-Reference for Tavern Host 0.9.6. This file is generated from the list in `public/app.js` (the same one the panel shows in Settings → API reference) by `node tools/make-api-docs.mjs`.
+Reference for Tavern Host 0.10.0. This file is generated from the list in `public/app.js` (the same one the panel shows in Settings → API reference) by `node tools/make-api-docs.mjs`.
 
 > Tavern Host is in beta and updates are frequent. Routes can change between versions; check this file for the version you run.
 
@@ -181,6 +181,7 @@ curl -X POST -H "Authorization: Bearer th_…" -H "Content-Type: application/jso
 | `POST /api/servers/{id}/addons/check-updates` | Newer versions available (Valheim: Thunderstore/Hexium; Bedrock: CurseForge, for linked addons) | See the server |
 | `POST /api/servers/{id}/addons/{item}/update` | Update one (Valheim; Bedrock: installs the newest CurseForge file on the chosen channel) | Manage mods / plugins / addons |
 | `POST /api/servers/{id}/addons/{item}/curseforge` | Bedrock: link an addon to a CurseForge project for updates: {"projectId":123}, or {"projectId":null} to unlink | Manage mods / plugins / addons |
+| `POST /api/servers/{id}/steam-login` | Open SteamCMD on the server's PC to sign in for Workshop downloads: {"username":"..."} (owner only). Then POST /steam-login/confirm with the same body; DELETE /steam-login signs out | Owner |
 | `POST /api/servers/{id}/addons/by-id` | Add a mod by ID or link (Space Engineers: Steam Workshop): {"input":"https://steamcommunity.com/sharedfiles/filedetails/?id=…"} | Manage mods / plugins / addons |
 | `GET /api/servers/{id}/addons/update-settings` | Bedrock addon updates: {channel: "release"\|"beta"\|"alpha", auto} | See the server |
 | `PUT /api/servers/{id}/addons/update-settings` | Change them: {"channel":"beta","auto":true} (beta/alpha files only count when newer than the newest release) | Manage mods / plugins / addons |

@@ -6,6 +6,8 @@ import { promisify } from 'node:util';
 import path from 'node:path';
 import { rootDir } from './store.ts';
 import { findLockers } from './platform/process.ts';
+import { exampleFolder, isLinux, moveToTrash } from './platform/host.ts';
+import os from 'node:os';
 
 const execFileAsync = promisify(execFile);
 const MAX_ENTRIES = 2000;
@@ -19,7 +21,7 @@ export interface Entry {
 
 function resolveAbsolute(p: string): string {
   const raw = String(p ?? '').trim();
-  if (!raw || !path.isAbsolute(raw)) throw new Error('A full path is required, e.g. C:\\GameServers');
+  if (!raw || !path.isAbsolute(raw)) throw new Error(`A full path is required, e.g. ${exampleFolder()}`);
   return path.resolve(raw);
 }
 
@@ -34,6 +36,20 @@ function validName(name: string): string {
 
 function drives(): Entry[] {
   const list: Entry[] = [];
+  if (isLinux) {
+    // The places worth starting from: home, the whole system, and removable or extra drives (SteamOS mounts SD cards in /run/media).
+    const add = (p: string) => {
+      if (existsSync(p) && !list.some((e) => e.name === p)) list.push({ name: p, type: 'dir', size: null, modified: null });
+    };
+    add(os.homedir());
+    add('/');
+    for (const base of ['/mnt', '/media', `/media/${os.userInfo().username}`, '/run/media', `/run/media/${os.userInfo().username}`]) {
+      try {
+        for (const d of readdirSync(base, { withFileTypes: true })) if (d.isDirectory() && d.name !== os.userInfo().username && !/^wsl|^wslg$/.test(d.name)) add(path.join(base, d.name));
+      } catch {}
+    }
+    return list;
+  }
   for (let c = 65; c <= 90; c++) {
     const root = `${String.fromCharCode(c)}:\\`;
     if (existsSync(root)) list.push({ name: root, type: 'dir', size: null, modified: null });
@@ -80,10 +96,10 @@ function isInside(child: string, parent: string): boolean {
   return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
 }
 
-const SYSTEM_DIRS = [process.env.SystemRoot, process.env.ProgramFiles, process.env['ProgramFiles(x86)'], process.env.ProgramData]
+const SYSTEM_DIRS = (isLinux ? ['/bin', '/boot', '/dev', '/etc', '/lib', '/lib32', '/lib64', '/proc', '/run/current-system', '/sbin', '/sys', '/usr', '/var'] : [process.env.SystemRoot, process.env.ProgramFiles, process.env['ProgramFiles(x86)'], process.env.ProgramData])
   .filter((d): d is string => !!d)
   .map((d) => path.resolve(d));
-const USERS_DIR = path.resolve(process.env.SystemDrive ? `${process.env.SystemDrive}\\Users` : 'C:\\Users');
+const USERS_DIR = isLinux ? path.dirname(os.homedir()) : path.resolve(process.env.SystemDrive ? `${process.env.SystemDrive}\\Users` : 'C:\\Users');
 
 /**
  * Throws if changing/deleting `target` is too dangerous: drive roots, system folders, user profile roots,
@@ -121,6 +137,7 @@ export async function deleteEntry(p: string, inUse: string[]): Promise<void> {
 
 /** Sends `target` to the Recycle Bin with no safety checks (callers check first). */
 export async function recycle(target: string): Promise<void> {
+  if (isLinux) return moveToTrash(target);
   const isDir = statSync(target).isDirectory();
   const script =
     'Add-Type -AssemblyName Microsoft.VisualBasic; ' +

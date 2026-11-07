@@ -1,4 +1,6 @@
 import http from 'node:http';
+import { currentDownloads, withDownloads } from './platform/mod-downloads.ts';
+import { exampleFolder } from './platform/host.ts';
 import { readFileSync, existsSync, writeFileSync, createWriteStream, createReadStream, statSync, mkdirSync, rmSync, openSync, readSync, writeSync, closeSync } from 'node:fs';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
@@ -10,6 +12,7 @@ import { linkPacks, unlinkPack, getUpdateSettings, setUpdateSettings } from './g
 import { listProxyServers, addProxyServer, removeProxyServer, setDefaultProxyServer, proxyName, prepareBackend } from './games/bungee-network.ts';
 import { downloadNexus, nexusPackage, NEXUS_GAMES } from './nexus.ts';
 import { nexusKey, nexusUser, setNexusKey, NEXUS_APP } from './nexus-key.ts';
+import { steamAccount, openSteamLogin, confirmSteamLogin, steamSignOut } from './steamcmd.ts';
 import { factorioStatus, setFactorioLogin, importFactorioLogin } from './factorio-key.ts';
 import { getDiscord, setDiscord, testDiscord, startDiscordNotifications, NOTIFY_EVENTS } from './discord.ts';
 import { downloadFile } from './download.ts';
@@ -293,6 +296,8 @@ route('GET', '/api/me', async ({ user, principal, remote }) => ({
   updatedFrom,
   // "development" = running from the sources (test panel); "release" = an installed or portable build.
   build: isDev ? 'development' : 'release',
+  platform: process.platform,
+  serverRoot: exampleFolder(...(isDev ? ['Dev'] : [])),
   user: user ? auth.toPublic(user) : null,
   apiKey: principal?.kind === 'apikey' ? principal.name : undefined,
   // What this account may do outside single servers (the UI hides what it can't use).
@@ -366,9 +371,13 @@ route('PUT', '/api/me/password', async (ctx) => {
 
 route('GET', '/api/games', async (ctx) => {
   need(ctx);
-  return Object.values(GAMES).map((g) => ({
+  return Object.values(GAMES).filter((g) => process.platform !== 'linux' || g.linux !== 'unavailable').map((g) => ({
     id: g.id,
     name: g.name,
+    // Runs through Wine on this system (Linux, a server that only exists for Windows).
+    needsWine: process.platform === 'linux' && g.linux === 'wine',
+    // Where new servers go by default on this system (a node may be a different system from the one showing the page).
+    serverRoot: exampleFolder(),
     fields: g.fields,
     accessLists: g.accessLists ?? [],
     canCreate: !!g.install,
@@ -1103,6 +1112,7 @@ route('GET', '/api/servers/:id/addons', async (ctx) => {
     // Added by ID or link instead of a file (Space Engineers: Steam Workshop).
     canAddById: !!addons.addById,
     byIdPlaceholder: addons.addByIdPlaceholder ?? null,
+    workshop: addons.workshop ? { ...addons.workshop, account: steamAccount(), canSignIn: !!ctx.principal?.owner } : null,
     share: addons === inst.module.addons && canShare(inst.record.game) ? { enabled: !!shareToken(inst.id) } : null,
     locations: addons.locations
       ? { options: addons.locations.options, current: addons.locations.get(inst.record), paths: addons.locations.describe(inst.record) }
@@ -1118,6 +1128,12 @@ route('GET', '/api/servers/:id/addons/search', async (ctx) => {
   if (!addons.search) throw new HttpError(404, 'No search here.');
   const q = new URL(ctx.req.url ?? '', 'http://x').searchParams.get('q') ?? '';
   return addons.search(inst.record, q.slice(0, 100));
+});
+
+// Mod files downloading for this server right now, for the progress panel.
+route('GET', '/api/servers/:id/mod-downloads', async (ctx) => {
+  needServer(ctx, 'view', ctx.params[0]);
+  return { downloads: currentDownloads(ctx.params[0]) };
 });
 
 route('POST', '/api/servers/:id/addons/found', async (ctx) => {
@@ -1522,7 +1538,7 @@ route('POST', '/api/servers/:id/addons/curseforge', async (ctx) => {
 // Adds a mod by ID or link (games whose mods come from somewhere like the Steam Workshop). Body: {"input": "..."}.
 route('POST', '/api/servers/:id/addons/by-id', async (ctx) => {
   const p = needServer(ctx, 'addons.manage', ctx.params[0]);
-  const { inst, addons } = addonsOf(ctx.params[0]);
+  const { inst, addons } = addonsOf(ctx.params[0], true);
   if (!addons.addById) throw new HttpError(404, 'This game adds mods from files.');
   const { input } = await readBody(ctx.req);
   let result;
@@ -1533,6 +1549,45 @@ route('POST', '/api/servers/:id/addons/by-id', async (ctx) => {
   }
   audit(p, `added mod ${String(input).slice(0, 120)} on "${inst.record.name}"`);
   return { ...result, packs: addons.list(inst.record), running: inst.isRunning };
+});
+
+// Steam sign-in for Workshop downloads, on the PC this server runs on. Owner only: it's the owner's Steam account.
+function steamLoginAccess(ctx: Ctx, id: string) {
+  const p = needServer(ctx, 'addons.manage', id);
+  if (!p.owner) throw new HttpError(403, 'Only the owner can change the Steam sign-in.');
+  return p;
+}
+
+// Opens SteamCMD's window on that PC. Body: {"username": "..."}.
+route('POST', '/api/servers/:id/steam-login', async (ctx) => {
+  steamLoginAccess(ctx, ctx.params[0]);
+  const { username } = await readBody(ctx.req);
+  try {
+    await openSteamLogin(username);
+  } catch (err) {
+    throw new HttpError(400, (err as Error).message);
+  }
+  return { ok: true };
+});
+
+// Checks that the sign-in worked and remembers the account. Body: {"username": "..."}.
+route('POST', '/api/servers/:id/steam-login/confirm', async (ctx) => {
+  const p = steamLoginAccess(ctx, ctx.params[0]);
+  const { username } = await readBody(ctx.req);
+  try {
+    const account = await confirmSteamLogin(username);
+    audit(p, `signed in to Steam as ${account} for Workshop downloads`);
+    return { account };
+  } catch (err) {
+    throw new HttpError(400, (err as Error).message);
+  }
+});
+
+route('DELETE', '/api/servers/:id/steam-login', async (ctx) => {
+  const p = steamLoginAccess(ctx, ctx.params[0]);
+  steamSignOut();
+  audit(p, 'signed out of Steam for Workshop downloads');
+  return { ok: true };
 });
 
 // ---------- BungeeCord network (the servers behind a proxy) ----------
@@ -2927,7 +2982,10 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, remot
         const m = req.method === method && re.exec(pathname);
         if (m) {
           const ctx = { req, res, principal, user, params: m.slice(1).map(decodeURIComponent), token, remote };
-          const result = await addonKind.run(pluginsPath ? 'plugins' : 'addons', () => handler(ctx));
+          // Downloads made while handling a server's request count for that server (the page's progress panel asks below).
+          const dlScope = req.method === 'POST' ? /^\/api\/servers\/([^/]+)\//.exec(url.pathname)?.[1] : null;
+          const run = () => addonKind.run(pluginsPath ? 'plugins' : 'addons', () => handler(ctx));
+          const result = await (dlScope ? withDownloads(decodeURIComponent(dlScope), run) : run());
           if (result !== undefined) send(res, 200, result);
           return;
         }

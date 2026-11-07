@@ -8,7 +8,7 @@ import path from 'node:path';
 import os from 'node:os';
 import type { ServerRecord } from './types.ts';
 import { ZipFile } from '../zip.ts';
-import { defenderScan } from '../modscan.ts';
+import { defenderScan, SCANNER, noScannerIsNormal } from '../modscan.ts';
 
 export type Loader = 'fabric' | 'quilt' | 'forge' | 'neoforge' | 'plugin' | 'paper-plugin' | 'bungee' | 'unknown';
 export type ContentKind = 'mods' | 'plugins';
@@ -506,8 +506,8 @@ export async function installContent(record: ServerRecord, file: string, source:
     for (const jar of jars) {
       // Windows Defender first: a detection stops the install.
       const scan = await defenderScan(jar);
-      if (scan.result === 'threat') throw new Error(`Not installed: Windows Defender found ${scan.threat} in ${path.basename(jar).replace(/^\d+-/, '')}.`);
-      if (scan.result !== 'clean') result.warnings.push(`⚠ Windows Defender couldn't scan ${path.basename(jar).replace(/^\d+-/, '')} (another antivirus may be in charge).`);
+      if (scan.result === 'threat') throw new Error(`Not installed: ${SCANNER} found ${scan.threat} in ${path.basename(jar).replace(/^\d+-/, '')}.`);
+      if (scan.result !== 'clean' && !noScannerIsNormal) result.warnings.push(`⚠ Windows Defender couldn't scan ${path.basename(jar).replace(/^\d+-/, '')} (another antivirus may be in charge).`);
       const info = readJar(jar);
       const fileName = path.basename(file) === path.basename(jar) || jar === file ? path.basename(file).replace(/\.zip$/i, '.jar') : path.basename(jar).replace(/^\d+-/, '');
       const target = fileName.replace(/[^\w.\-+ ]/g, '_');

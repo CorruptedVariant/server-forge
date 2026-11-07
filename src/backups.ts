@@ -9,6 +9,8 @@ import path from 'node:path';
 import os from 'node:os';
 import { dataPath, readJson, writeJson } from './store.ts';
 import { formatBytes } from './download.ts';
+import { isLinux } from './platform/host.ts';
+import { unzipFile, zipDirectory } from './platform/archive.ts';
 import type { Job } from './jobs.ts';
 import type { ConsoleIO, GameModule, ServerRecord } from './games/types.ts';
 
@@ -61,6 +63,7 @@ export function backupsFolder(serverId: string) {
 
 /** Zips/unzips with .NET's built-in ZipFile (handles large files); paths go through environment variables. */
 export async function zipFolder(source: string, zip: string) {
+  if (isLinux) return zipDirectory(source, zip);
   await execFileAsync(
     'powershell.exe',
     [
@@ -74,6 +77,7 @@ export async function zipFolder(source: string, zip: string) {
 }
 
 export async function unzipTo(zip: string, dest: string) {
+  if (isLinux) return unzipFile(zip, dest);
   await execFileAsync(
     'powershell.exe',
     ['-NoProfile', '-NonInteractive', '-Command', 'Add-Type -AssemblyName System.IO.Compression.FileSystem; [IO.Compression.ZipFile]::ExtractToDirectory($env:TH_SRC, $env:TH_DEST)'],

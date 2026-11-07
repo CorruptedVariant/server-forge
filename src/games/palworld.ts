@@ -6,14 +6,15 @@
 // Palworld's REST API (switched on here, on this system only, with the admin password) gives the player list,
 // announcements for countdowns, and a clean stop: save, then shut down.
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { bin, isLinux } from '../platform/host.ts';
 import path from 'node:path';
 import type { GameModule, LogParser, LogState, PropertyEntry, ServerRecord, Settings } from './types.ts';
 import { STEAM_APPS, num, bool, text, newPassword, steamInstall } from './steam-games.ts';
 import { palworldAddons } from './palworld-mods.ts';
 import { PAL_MANAGED, PAL_SETTINGS, type PalSetting } from './palworld-settings.ts';
 
-const EXE = path.join('Pal', 'Binaries', 'Win64', 'PalServer-Win64-Shipping-Cmd.exe');
-const SETTINGS = path.join('Pal', 'Saved', 'Config', 'WindowsServer', 'PalWorldSettings.ini');
+const EXE = isLinux ? path.join('Pal', 'Binaries', 'Linux', 'PalServer-Linux-Shipping') : path.join('Pal', 'Binaries', 'Win64', 'PalServer-Win64-Shipping-Cmd.exe');
+const SETTINGS = path.join('Pal', 'Saved', 'Config', bin('WindowsServer', 'LinuxServer'), 'PalWorldSettings.ini');
 const SECTION = '[/Script/Pal.PalGameWorldSettings]';
 
 // ---------- the OptionSettings line ----------
@@ -283,7 +284,7 @@ function createPalworldParser(): LogParser {
 export const palworld: GameModule = {
   id: 'palworld',
   name: 'Palworld',
-  processName: 'PalServer-Win64-Shipping-Cmd.exe',
+  processName: path.basename(EXE),
 
   fields: [
     { key: 'serverName', label: 'Server name', type: 'text', restart: true },
@@ -327,7 +328,7 @@ export const palworld: GameModule = {
   },
 
   checkInstall(installDir) {
-    if (!existsSync(path.join(installDir, EXE))) throw new Error(`${EXE} was not found in that folder (pick the folder with PalServer.exe).`);
+    if (!existsSync(path.join(installDir, EXE))) throw new Error(`${EXE} was not found in that folder (pick the folder with ${bin('PalServer.exe', 'PalServer.sh')}).`);
   },
 
   async prepare(record) {
@@ -338,7 +339,8 @@ export const palworld: GameModule = {
     const s = record.settings;
     return {
       exe: path.join(record.installDir, EXE),
-      args: [`-port=${s.port}`, `-players=${s.maxPlayers}`, ...(s.public ? ['-publiclobby'] : [])],
+      // PalServer.sh passes the project name first on Linux.
+      args: [...(isLinux ? ['Pal'] : []), `-port=${s.port}`, `-players=${s.maxPlayers}`, ...(s.public ? ['-publiclobby'] : [])],
       cwd: record.installDir,
     };
   },

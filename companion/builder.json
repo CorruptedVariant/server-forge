@@ -17,6 +17,7 @@
     "dist/modscan.js",
     "dist/nexus.js",
     "dist/bepinex-config.js",
+    "dist/platform/**",
     "dist/modsync/**",
     "package.json"
   ],
@@ -38,5 +39,24 @@
     "license": "LICENSE",
     "artifactName": "SF-Mod-Manager-Setup-${version}.exe"
   },
-  "publish": null
+  "publish": null,
+  "linux": {
+    "target": [
+      "AppImage",
+      "deb",
+      "rpm"
+    ],
+    "icon": "companion/icon.png",
+    "executableName": "sf-mod-manager",
+    "category": "Game",
+    "maintainer": "CorruptedVariant <75761168+Volatile111@users.noreply.github.com>",
+    "artifactName": "SF-Mod-Manager-${version}-${arch}.${ext}",
+    "synopsis": "Keeps your mods matched to your game servers"
+  },
+  "rpm": {
+    "fpm": [
+      "--rpm-rpmbuild-define",
+      "_build_id_links none"
+    ]
+  }
 }

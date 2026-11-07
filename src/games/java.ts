@@ -1,5 +1,7 @@
 // Minecraft Java Edition servers: Vanilla, Paper, Fabric, Forge, NeoForge, Spigot, SpongeVanilla and BungeeCord.
 import { existsSync, readFileSync, writeFileSync, readdirSync, statSync, cpSync, rmSync } from 'node:fs';
+import { bin, isLinux } from '../platform/host.ts';
+import { ZipFile } from '../zip.ts';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import type { GameModule, LogParser, LogState, Player, PropertyEntry, ServerRecord, Settings, SettingField } from './types.ts';
@@ -127,6 +129,21 @@ function walkFiles(root: string, base: string, out: { rel: string; length: numbe
 
 /** Reads version.json from inside a server jar (Mojang includes the Minecraft version and required Java there). */
 function readVersionJson(jarPath: string): { id?: string; java?: number } | null {
+  if (isLinux) {
+    try {
+      const zip = new ZipFile(jarPath);
+      try {
+        const entry = zip.get('version.json');
+        if (!entry) return null;
+        const v = JSON.parse(entry.toString('utf-8')) as { id?: string; java_version?: number };
+        return { id: v.id, java: v.java_version };
+      } finally {
+        zip.close();
+      }
+    } catch {
+      return null;
+    }
+  }
   try {
     const script =
       'Add-Type -AssemblyName System.IO.Compression.FileSystem; $z = [IO.Compression.ZipFile]::OpenRead($env:TH_JAR); ' +
@@ -147,6 +164,9 @@ function readVersionJson(jarPath: string): { id?: string; java?: number } | null
 
 // ---------- module ----------
 
+/** The arguments file Forge and NeoForge's installers write for this system. */
+const ARGS_FILE = bin('win_args.txt', 'unix_args.txt');
+
 const flavorField: SettingField = {
   key: 'flavor',
   label: 'Server type',
@@ -157,7 +177,7 @@ const flavorField: SettingField = {
 export const java: GameModule = {
   id: 'java',
   name: 'Minecraft Java',
-  processName: 'java.exe',
+  processName: bin('java.exe', 'java'),
   commands: { stop: (record) => (isProxy(record) ? 'end' : 'stop') },
   eula: { label: 'I agree to the Minecraft End User License Agreement', url: 'https://aka.ms/MinecraftEULA' },
 
@@ -235,8 +255,8 @@ export const java: GameModule = {
       const root = path.join(installDir, 'libraries', ...group.split('/'));
       if (!existsSync(root)) continue;
       for (const v of readdirSync(root)) {
-        if (existsSync(path.join(root, v, 'win_args.txt'))) {
-          out.argsFile = path.join('libraries', ...group.split('/'), v, 'win_args.txt');
+        if (existsSync(path.join(root, v, ARGS_FILE))) {
+          out.argsFile = path.join('libraries', ...group.split('/'), v, ARGS_FILE);
           out.flavor ??= group.includes('neoforged') ? 'neoforge' : 'forge';
         }
       }

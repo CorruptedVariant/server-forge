@@ -1,14 +1,15 @@
 // Runs and watches game servers. Each server runs in its own hidden console, independent of the panel, so the
 // panel can restart or update without stopping games; on startup it re-attaches to servers that are still running.
 import { events } from './events.ts';
+import { bin, exampleFolder, findOnPath, isLinux, stateFolder, wineHelp } from './platform/host.ts';
 import { runningJob, startJob, jobsFor } from './jobs.ts';
-import { existsSync, renameSync, statSync, openSync, readSync, closeSync, mkdirSync, readdirSync, readFileSync, writeFileSync, unlinkSync, copyFileSync, rmSync } from 'node:fs';
+import { readlinkSync, existsSync, renameSync, statSync, openSync, readSync, closeSync, mkdirSync, readdirSync, readFileSync, writeFileSync, unlinkSync, copyFileSync, rmSync } from 'node:fs';
 import { randomUUID, randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import os from 'node:os';
 import { readJson, writeJson, dataPath, dataDir, isDev, rootDir } from './store.ts';
-import { startHidden, isAlive, processName, sendCtrlC, sendConsoleInput, forceKill, waitForExit, sendPipeCommand, processesRunningFrom } from './platform/process.ts';
+import { type StartOptions, makeExecutable, startHidden, isAlive, processName, sendCtrlC, sendConsoleInput, forceKill, waitForExit, sendPipeCommand, processesRunningFrom } from './platform/process.ts';
 import { quickCheckDb } from './leveldb.ts';
 import type { GameModule, LogParser, ServerRecord, Settings } from './games/types.ts';
 import { valheim } from './games/valheim.ts';
@@ -38,14 +39,23 @@ export const GAMES: Record<string, GameModule> = { bedrock, java, valheim, 'terr
 const thisFile = fileURLToPath(import.meta.url);
 const RUNNER_SCRIPT = path.join(path.dirname(thisFile), `runner${path.extname(thisFile)}`);
 
+/** A Windows-only server under Wine, with its own Wine folder inside the server folder. Xvfb stands in for a screen when there's none. */
+function throughWine(launch: StartOptions, game: string, installDir: string): StartOptions {
+  const wine = findOnPath('wine');
+  if (!wine) throw new Error(wineHelp(game));
+  const env = { ...launch.env, WINEPREFIX: path.join(installDir, '.wine'), WINEDEBUG: '-all', WINEARCH: 'win64', WINEDLLOVERRIDES: 'mscoree,mshtml=' };
+  const xvfb = findOnPath('xvfb-run');
+  return xvfb ? { ...launch, exe: xvfb, args: ['-a', wine, launch.exe, ...launch.args], env } : { ...launch, exe: wine, args: [launch.exe, ...launch.args], env };
+}
+
 // ---------- the runner's own copy of the runtime (installed app) ----------
 // Runners keep running for as long as their game server does. If they ran Tavern Host.exe from the install folder,
 // that file would be locked and an update couldn't replace it (and the installer used to close them, stopping the
 // servers). So the installed app gives runners a copy of what Node mode needs, in the data folder, one per version,
 // under a different name ("Tavern Host Runner.exe"). Updates then never touch a running server.
 
-const RUNNER_EXE = 'Tavern Host Runner.exe';
-const RUNTIME_FILES = ['ffmpeg.dll', 'icudtl.dat', 'snapshot_blob.bin', 'v8_context_snapshot.bin'];
+const RUNNER_EXE = bin('Tavern Host Runner.exe', 'server-forge-runner');
+const RUNTIME_FILES = isLinux ? ['libffmpeg.so', 'icudtl.dat', 'snapshot_blob.bin', 'v8_context_snapshot.bin'] : ['ffmpeg.dll', 'icudtl.dat', 'snapshot_blob.bin', 'v8_context_snapshot.bin'];
 const PANEL_VERSION: string = (() => {
   try {
     return JSON.parse(readFileSync(path.join(rootDir, 'package.json'), 'utf-8')).version;
@@ -53,6 +63,17 @@ const PANEL_VERSION: string = (() => {
     return 'dev';
   }
 })();
+
+/** Linux doesn't stop you deleting a running program, so check that no runner still runs from this copy. */
+function runtimeInUse(dir: string) {
+  for (const name of readdirSync('/proc')) {
+    if (!/^\d+$/.test(name)) continue;
+    try {
+      if (readlinkSync(`/proc/${name}/exe`).startsWith(dir + path.sep)) return true;
+    } catch {}
+  }
+  return false;
+}
 
 function runnerRuntime(): { exe: string; script: string } {
   // Development runs on plain Node, which isn't in any install folder.
@@ -74,7 +95,9 @@ function runnerRuntime(): { exe: string; script: string } {
   // Old versions' copies: remove the ones no runner uses any more (a copy in use can't be deleted, so it stays).
   try {
     for (const v of readdirSync(dataPath('runtime'))) {
-      if (v !== PANEL_VERSION) rmSync(dataPath('runtime', v), { recursive: true, force: true, maxRetries: 0 });
+      if (v === PANEL_VERSION) continue;
+      if (isLinux && runtimeInUse(dataPath('runtime', v))) continue;
+      rmSync(dataPath('runtime', v), { recursive: true, force: true, maxRetries: 0 });
     }
   } catch {}
   return { exe, script };
@@ -442,13 +465,20 @@ class ServerInstance {
       this.setStatus('starting', null);
       this.note(`Starting ${this.module.name} server...`);
       if (this.module.prepare) await this.module.prepare(this.record, (msg) => this.note(msg));
-      const launch = this.module.launch(this.record, this.logFile);
-      if (this.module.commands || this.module.captureOutput) {
+      let launch = this.module.launch(this.record, this.logFile);
+      if (isLinux && this.module.linux === 'unavailable') throw new Error(`${this.module.name} servers can't run on Linux.`);
+      if (isLinux) makeExecutable(launch.exe);
+      if (isLinux && this.module.linux === 'wine') launch = throughWine(launch, this.module.name, this.record.installDir);
+      // On Linux, games that take typed commands read them from the runner's pipe (there's no console window to type into).
+      if (this.module.commands || this.module.captureOutput || (isLinux && this.module.consoleCommands)) {
         // Games that read typed commands run under the runner, which owns their console (see runner.ts); so do games
         // whose output only goes to their console (captureOutput: the runner writes it to the log).
-        this.pipe = `\\\\.\\pipe\\tavernhost-${this.id}-${randomBytes(6).toString('hex')}`;
+        const pipeName = `tavernhost-${this.id}-${randomBytes(6).toString('hex')}`;
+        this.pipe = isLinux ? path.join(os.tmpdir(), `${pipeName}.sock`) : `\\\\.\\pipe\\${pipeName}`;
         this.token = randomBytes(24).toString('hex');
-        const spec = { ...launch, logFile: this.logFile, pipe: this.pipe, token: this.token };
+        // A game keeping its own log (tModLoader, on Linux here for typed commands) needs that file left alone.
+        const runnerLog = isLinux && this.module.consoleCommands ? dataPath('servers', this.id, 'runner.log') : this.logFile;
+        const spec = { ...launch, logFile: runnerLog, pipe: this.pipe, token: this.token };
         const runner = runnerRuntime();
         this.pid = await startHidden({
           exe: runner.exe,
@@ -523,7 +553,7 @@ class ServerInstance {
       if (!sent && this.module.consoleCommands) {
         const stopCmd = this.module.consoleCommands.stop;
         this.note(`Stopping: typing "${stopCmd}" so the server saves and shuts down...`);
-        sent = await sendConsoleInput(pid, stopCmd);
+        sent = isLinux && this.pipe && this.token ? await sendPipeCommand(this.pipe, this.token, stopCmd).then(() => true, () => false) : await sendConsoleInput(pid, stopCmd);
         if (!sent) this.note('Could not type the stop command; trying Ctrl+C.');
       }
       if (!sent) {
@@ -544,7 +574,7 @@ class ServerInstance {
       this.stopWatching();
       this.pid = null;
       this.startedAt = null;
-      this.note(exited ? 'Server stopped.' : 'Server may still be running; check Task Manager.');
+      this.note(exited ? 'Server stopped.' : `Server may still be running; check ${isLinux ? 'your system monitor' : 'Task Manager'}.`);
       this.setStatus('stopped', exited ? null : 'Stop may have failed.');
       if (forced) events.emit('force-stopped', this.id);
     } finally {
@@ -681,7 +711,8 @@ class ServerInstance {
     } else if (this.module.consoleCommands) {
       // Typed into the server's own console (it ignores piped input).
       if (!this.pid || !isAlive(this.pid)) throw new Error('The server is not running.');
-      if (!(await sendConsoleInput(this.pid, clean))) throw new Error("Couldn't type into the server's console.");
+      if (isLinux && this.pipe && this.token) await sendPipeCommand(this.pipe, this.token, clean);
+      else if (!(await sendConsoleInput(this.pid, clean))) throw new Error("Couldn't type into the server's console.");
     } else {
       if (!this.pid || !isAlive(this.pid) || !this.pipe || !this.token) throw new Error('The server is not running.');
       await sendPipeCommand(this.pipe, this.token, clean);
@@ -694,8 +725,11 @@ class ServerInstance {
     const name = await processName(pid);
     // Runner-based servers are tracked by the runner's process: "Tavern Host Runner.exe" (installed app), or this same
     // executable (development, and servers started by versions before the separate runner).
-    const expected = this.module.commands || this.module.captureOutput ? [path.basename(process.execPath), RUNNER_EXE] : [this.module.processName];
-    if (!expected.some((e) => e.toLowerCase() === name?.toLowerCase())) return;
+    const viaRunner = this.module.commands || this.module.captureOutput || (isLinux && this.module.consoleCommands);
+    // Under Wine the process is Wine's own loader, whatever the game is called.
+    const wine = isLinux && this.module.linux === 'wine' && /^(wine|xvfb|sh$|bash$)|\.exe$/.test(name ?? '');
+    const expected = viaRunner ? [path.basename(process.execPath), RUNNER_EXE] : [this.module.processName];
+    if (!wine && !expected.some((e) => e.toLowerCase() === name?.toLowerCase())) return;
     if (this.module.commands && (!pipe || !token)) return;
     this.pid = pid;
     this.pipe = pipe;
@@ -869,7 +903,7 @@ function saveServers() {
 // its server folders in a shared file, and no panel may use a folder another panel lists (or one inside it, or around
 // it), so one can never start, update or delete another's servers.
 
-const FOLDER_REGISTRY = path.join(process.env.LOCALAPPDATA ?? os.homedir(), 'Tavern Host', 'panel-folders.json');
+const FOLDER_REGISTRY = isLinux ? path.join(stateFolder(), 'panel-folders.json') : path.join(process.env.LOCALAPPDATA ?? os.homedir(), 'Tavern Host', 'panel-folders.json');
 const ourKey = () => path.resolve(dataDir).toLowerCase();
 type FolderRegistry = Record<string, { build: string; folders: string[]; updated: number }>;
 
@@ -896,12 +930,13 @@ function publishFolders() {
 function overlaps(a: string, b: string) {
   const x = path.resolve(a).toLowerCase();
   const y = path.resolve(b).toLowerCase();
-  const inside = (c: string, p: string) => c === p || c.startsWith(p.endsWith('\\') ? p : `${p}\\`);
+  const inside = (c: string, p: string) => c === p || c.startsWith(p.endsWith(path.sep) ? p : `${p}${path.sep}`);
   return inside(x, y) || inside(y, x);
 }
 
 /** The installed panel's data folders (current and pre-rename), for versions too old to publish their folders. */
 function installedDataDirs(): string[] {
+  if (isLinux) return [path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'Server Forge', 'data')];
   const appData = process.env.APPDATA;
   return appData ? [path.join(appData, 'Tavern Host', 'data'), path.join(appData, 'Game Server Panel', 'data')] : [];
 }
@@ -1110,7 +1145,7 @@ export function createNewServer(input: { game: string; name: string; installDir:
   const installDir = String(input.installDir ?? '').trim();
   if (!name || name.length > 60) throw new Error('Name is required (up to 60 characters).');
   if (module.eula && input.acceptEula !== true) throw new Error('You need to accept the Minecraft EULA to create this server.');
-  if (!path.isAbsolute(installDir)) throw new Error('Choose a full folder path, e.g. C:\\GameServers\\My Server');
+  if (!path.isAbsolute(installDir)) throw new Error(`Choose a full folder path, e.g. ${exampleFolder('My Server')}`);
   assertFolderFree(installDir);
   if (existsSync(installDir) && readdirSync(installDir).length > 0) {
     throw new Error('That folder is not empty. Choose a new or empty folder, or use Import Server for an existing server.');

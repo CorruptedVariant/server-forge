@@ -5,9 +5,10 @@
 // themselves are left alone. Fabric is set up in the launcher automatically; Forge and NeoForge need their installer run
 // once ("Install client").
 import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync, copyFileSync, statSync, readdirSync } from 'node:fs';
+import os from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
-import { defenderScan, type ScanResult } from '../modscan.ts';
+import { defenderScan, type ScanResult, SCANNER, noScannerIsNormal } from '../modscan.ts';
 import { pinnedGet, type Link, type AnyManifest } from './sync.ts';
 
 export interface JavaMod {
@@ -55,6 +56,10 @@ export function checkJavaManifest(any: AnyManifest): JavaManifest {
 // ---------- folders ----------
 
 export function minecraftDir(): string {
+  if (process.platform === 'linux') {
+    const flatpak = path.join(os.homedir(), '.var', 'app', 'com.mojang.Minecraft', '.minecraft');
+    return existsSync(flatpak) ? flatpak : path.join(os.homedir(), '.minecraft');
+  }
   return path.join(process.env.APPDATA ?? path.join(process.env.USERPROFILE ?? '', 'AppData', 'Roaming'), '.minecraft');
 }
 
@@ -311,10 +316,10 @@ export async function prepareJava(folder: string, m: JavaManifest, link: Link, a
     const def = await defenderScan(d.jar);
     const modrinth = known[d.sha1] ?? null;
     const flags: ScanResult['flags'] = [];
-    if (def.result === 'threat') flags.push({ level: 'high', text: `Windows Defender found ${def.threat}` } as ScanResult['flags'][number]);
-    else if (def.result !== 'clean') flags.push({ level: 'medium', text: "Windows Defender couldn't scan it (another antivirus may be in charge)" } as ScanResult['flags'][number]);
+    if (def.result === 'threat') flags.push({ level: 'high', text: `${SCANNER} found ${def.threat}` } as ScanResult['flags'][number]);
+    else if (def.result !== 'clean' && !noScannerIsNormal) flags.push({ level: 'medium', text: "Windows Defender couldn't scan it (another antivirus may be in charge)" } as ScanResult['flags'][number]);
     const verdict: ScanResult['verdict'] = def.result === 'threat' ? 'blocked' : def.result === 'clean' ? 'clean' : 'review';
-    const summary = def.result === 'threat' ? `blocked: Windows Defender found ${def.threat}` : `${def.result === 'clean' ? 'Windows Defender: clean' : "Windows Defender couldn't scan it"} · ${modrinth ? `the exact file is on Modrinth (${modrinth})` : 'not found on Modrinth (sent by the server owner)'}`;
+    const summary = def.result === 'threat' ? `blocked: ${SCANNER} found ${def.threat}` : `${noScannerIsNormal && def.result !== 'clean' ? 'No virus scanner on this system' : def.result === 'clean' ? `${SCANNER}: clean` : "Windows Defender couldn't scan it"} · ${modrinth ? `the exact file is on Modrinth (${modrinth})` : 'not found on Modrinth (sent by the server owner)'}`;
     out.changes.push({
       key: `mc:${d.mod.file}@${d.sha256.slice(0, 16)}`,
       file: d.mod.file,

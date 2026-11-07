@@ -30,7 +30,12 @@ export interface ScanResult {
   summary: string;
 }
 
-// ---------- Windows Defender ----------
+// ---------- Windows Defender (ClamAV on Linux) ----------
+
+/** The virus scanner's name in messages. */
+export const SCANNER = process.platform === 'linux' ? 'ClamAV' : 'Windows Defender';
+/** Linux desktops often have no scanner, which isn't worth a warning on every mod the way Defender being off is. */
+export const noScannerIsNormal = process.platform === 'linux';
 
 function defenderExe(): string | null {
   const candidates = [path.join(process.env.ProgramFiles ?? 'C:\\Program Files', 'Windows Defender', 'MpCmdRun.exe')];
@@ -39,6 +44,17 @@ function defenderExe(): string | null {
 
 /** Scans one file (archives included) with Windows Defender, without letting it delete anything. */
 export function defenderScan(file: string): Promise<{ result: ScanResult['defender']; threat?: string }> {
+  // No Defender on Linux: ClamAV does the same job when it's installed. Exit code 1 = found something.
+  if (process.platform === 'linux') {
+    return new Promise((resolve) => {
+      execFile('clamscan', ['--no-summary', '--infected', file], { timeout: 300_000 }, (err, stdout) => {
+        const code = (err as { code?: number | string } | null)?.code ?? 0;
+        if (code === 1) resolve({ result: 'threat', threat: /: (.+) FOUND/.exec(String(stdout))?.[1] ?? 'unknown threat' });
+        else if (code === 0) resolve({ result: 'clean' });
+        else resolve({ result: 'unavailable' });
+      });
+    });
+  }
   const exe = defenderExe();
   if (!exe) return Promise.resolve({ result: 'unavailable' });
   return new Promise((resolve) => {
@@ -121,11 +137,11 @@ const TRUSTED_PACKAGES = new Set(['denikson-bepinexpack_valheim']);
 // ---------- whole package ----------
 
 function summarise(r: Omit<ScanResult, 'summary'>): string {
-  if (r.defender === 'threat') return `Windows Defender found ${r.threat}`;
+  if (r.defender === 'threat') return `${SCANNER} found ${r.threat}`;
   const high = r.flags.filter((f) => f.level === 'high');
   if (r.verdict === 'blocked') return r.flags[0]?.text ?? 'Blocked';
   if (high.length) return `Needs review: ${high[0].text.toLowerCase()}${high.length > 1 ? ` (+${high.length - 1} more)` : ''}`;
-  const def = r.defender === 'clean' ? 'Defender: clean' : r.defender === 'unavailable' ? 'Defender not available' : 'Defender scan failed';
+  const def = noScannerIsNormal ? (r.defender === 'clean' ? 'ClamAV: clean' : r.defender === 'unavailable' ? 'No virus scanner on this system' : 'ClamAV scan failed') : r.defender === 'clean' ? 'Defender: clean' : r.defender === 'unavailable' ? 'Defender not available' : 'Defender scan failed';
   const med = r.flags.filter((f) => f.level === 'medium').length;
   return `${def}${med ? ` · ${med} thing${med === 1 ? '' : 's'} to be aware of` : ' · nothing suspicious found'}`;
 }

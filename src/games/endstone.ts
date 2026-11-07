@@ -22,7 +22,7 @@ import { dataPath } from '../store.ts';
 import { downloadFile, extractZip, formatBytes } from '../download.ts';
 import { ZipFile } from '../zip.ts';
 import type { Job } from '../jobs.ts';
-import { defenderScan } from '../modscan.ts';
+import { defenderScan, SCANNER } from '../modscan.ts';
 
 const PYTHON_SERIES = '3.13';
 const PYPI = 'https://pypi.org/pypi';
@@ -406,7 +406,7 @@ export async function installPluginFile(installDir: string, file: string, source
   if (!/\.(whl|dll)$/i.test(name)) throw new Error('Endstone plugins are .whl files (Python) or .dll files (C++).');
   // Plugins are programs the server runs: Windows Defender first, like addons.
   const scan = await defenderScan(file);
-  if (scan.result === 'threat') throw new Error(`Not installed: Windows Defender found ${scan.threat} in ${name}.`);
+  if (scan.result === 'threat') throw new Error(`Not installed: ${SCANNER} found ${scan.threat} in ${name}.`);
   const warnings: string[] = [];
   let version: string | null = null;
   let display = name;
