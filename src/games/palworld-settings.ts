@@ -87,7 +87,7 @@ export const PAL_SETTINGS: PalSetting[] = [
   // ----- Bases and building -----
   int('BaseCampMaxNum', 'Bases on the server', 'Total bases allowed across the whole server.', BASES, { min: 1 }),
   int('BaseCampMaxNumInGuild', 'Bases per guild', 'From 1 to 10.', BASES, { min: 1, max: 10 }),
-  int('BaseCampWorkerMaxNum', 'Pals per base', 'Up to 50.', BASES, { min: 1, max: 50 }),
+  int('BaseCampWorkerMaxNum', 'Pals per base', 'Up to 50 in the normal game. Above 50 needs a worker-limit mod on the server.', BASES, { min: 1, max: 250 }),
   rate('BuildObjectHpRate', 'Building health', '1 = normal. ' + undocumented, BASES),
   rate('BuildObjectDamageRate', 'Damage to buildings', '1 = normal.', BASES),
   rate('BuildObjectDeteriorationDamageRate', 'Building decay speed', '1 = normal.', BASES),

@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { dataPath } from './store.ts';
 import { downloadFile, extractTar, extractZip, formatBytes } from './download.ts';
-import { bin, findOnPath, isLinux, packageHint } from './platform/host.ts';
+import { bin, findOnPath, isContainer, isLinux, packageHint } from './platform/host.ts';
 import type { Job } from './jobs.ts';
 
 const STEAMCMD_URL = isLinux ? 'https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz' : 'https://steamcdn-a.akamaihd.net/client/installer/steamcmd.zip';
@@ -232,6 +232,45 @@ export async function confirmSteamLogin(username: unknown): Promise<string> {
   }
   writeFileSync(accountFile(), JSON.stringify({ username: name }));
   return name;
+}
+
+/** No SteamCMD window can open here (the container has no screen or terminal), so the panel's own form signs in. */
+export const steamLoginInPanel = () => isContainer;
+
+/**
+ * Signs in from the panel's form where there's no SteamCMD window. The password and Steam Guard code are handed to
+ * SteamCMD once and never stored; SteamCMD then keeps its own saved login, as it does after signing in in its window.
+ */
+export async function steamLoginWithPassword(username: unknown, password: unknown, code: unknown): Promise<string> {
+  const name = checkAccountName(username);
+  const pass = String(password ?? '');
+  const guard = String(code ?? '').trim();
+  if (!pass) throw new Error('Enter your Steam password.');
+  if (guard && !/^[A-Za-z0-9]{5}$/.test(guard)) throw new Error('A Steam Guard code is 5 letters and numbers.');
+  await ensureSteamCmd({ update() {}, line() {} } as unknown as Job);
+  // Up to 3 minutes: with the Steam app's Steam Guard, SteamCMD waits while the owner approves the sign-in on their phone.
+  const out = await new Promise<string>((resolve) => {
+    const proc = spawn(steamCmdExe(), ['+@NoPromptForPassword', '1', '+login', name, pass, ...(guard ? [guard] : []), '+quit'], { cwd: steamCmdDir(), stdio: ['ignore', 'pipe', 'pipe'] });
+    let text = '';
+    const timer = setTimeout(() => proc.kill(), 180_000);
+    proc.stdout.on('data', (d) => (text += d.toString('utf-8')));
+    proc.stderr.on('data', (d) => (text += d.toString('utf-8')));
+    proc.on('error', (err) => (clearTimeout(timer), resolve(`ERROR! ${err.message}`)));
+    proc.on('close', () => (clearTimeout(timer), resolve(text.split(pass).join('***'))));
+  });
+  if (/Waiting for user info.*OK|Logging in user.*OK/is.test(out) && !/FAILED/i.test(out)) {
+    writeFileSync(accountFile(), JSON.stringify({ username: name }));
+    return name;
+  }
+  if (/Invalid ?Password/i.test(out)) throw new Error('Steam says the account name or password is wrong.');
+  if (/Rate ?Limit/i.test(out)) throw new Error('Steam is refusing sign-ins for a while after too many tries. Wait about an hour and try again.');
+  if (/Steam Guard|Two-factor|TwoFactor|AuthCode|Logon ?Denied/i.test(out)) {
+    throw new Error(guard
+      ? "Steam didn't accept that Steam Guard code. Codes change every 30 seconds (Steam app) or come by email: enter the newest one and sign in again."
+      : 'Steam wants a Steam Guard code: enter the code from your Steam app or email, and sign in again. If the Steam app asks you to approve the sign-in instead, approve it while Server Forge waits.');
+  }
+  const failed = /FAILED[^\n]*|ERROR![^\n]*/i.exec(out)?.[0];
+  throw new Error(`Steam sign-in didn't finish${failed ? `: ${failed.trim()}` : ' (no answer from Steam within 3 minutes).'}`);
 }
 
 /** Forgets the account and removes SteamCMD's saved login from this PC. */

@@ -213,6 +213,46 @@ process.on('exit', () => {
   save();
 });
 
+// The whole system's CPU %, from the cores' busy/idle times between two samples (inside a container: the host's).
+let cpuTimes: { busy: number; total: number } | null = null;
+let systemCpu: number | null = null;
+function sampleSystemCpu() {
+  let busy = 0;
+  let total = 0;
+  for (const c of os.cpus()) {
+    const t = c.times.user + c.times.nice + c.times.sys + c.times.irq + c.times.idle;
+    total += t;
+    busy += t - c.times.idle;
+  }
+  if (cpuTimes && total > cpuTimes.total) systemCpu = Math.min(100, Math.max(0, ((busy - cpuTimes.busy) / (total - cpuTimes.total)) * 100));
+  cpuTimes = { busy, total };
+}
+sampleSystemCpu();
+setInterval(sampleSystemCpu, INTERVAL_S * 1000).unref();
+
+/** The whole system's CPU % (all cores) and core count, for the sidebar's system headings. */
+export function systemCpuUsage(): { cpu: number | null; cores: number } {
+  return { cpu: systemCpu, cores: os.cpus().length };
+}
+
+/**
+ * The whole system's RAM, for the sidebar's system headings (bytes). Inside a container these are the host's numbers.
+ * ZFS (TrueNAS) keeps its read cache in RAM and hands it back when programs need it, so it's reported apart from "used"
+ * the way TrueNAS's own dashboard does, instead of making the system look full.
+ */
+export function systemMemory(): { total: number; used: number; zfsCache: number } {
+  const total = os.totalmem();
+  let zfsCache = 0;
+  if (isLinux) {
+    try {
+      zfsCache = Number(/^size\s+\d+\s+(\d+)$/m.exec(readFileSync('/proc/spl/kstat/zfs/arcstats', 'utf-8'))?.[1] ?? 0);
+    } catch {}
+  }
+  // freemem() is MemAvailable on Linux, which doesn't count the ZFS cache as available.
+  const used = Math.max(0, total - os.freemem() - zfsCache);
+  return { total, used, zfsCache };
+}
+
 /** Drops a deleted server's history. */
 export function forgetStats(id: string) {
   if (history.delete(id)) dirty = true;

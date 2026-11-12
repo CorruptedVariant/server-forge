@@ -7,6 +7,12 @@ import path from 'node:path';
 
 export const isLinux = process.platform === 'linux';
 
+/**
+ * Running inside the Server Forge container image (Docker, TrueNAS apps). There's no desktop, terminal or system admin
+ * prompt there: the web page on the remote-access port is the only way in, and the image is updated by replacing it.
+ */
+export const isContainer = isLinux && process.env.PANEL_CONTAINER === '1';
+
 /** The Windows or Linux form of a program's file name. */
 export const bin = (windows: string, linux: string) => (isLinux ? linux : windows);
 

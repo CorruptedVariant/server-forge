@@ -1,5 +1,25 @@
 # Changelog
 
+## Server Forge 0.11.0
+
+Server Forge can now run on a TrueNAS (or any Docker) system, adds Hytale, and shows each system's CPU and RAM.
+
+**New**
+- **Each system's CPU and RAM in the server list.** Under every system's name (This System and each node) the list shows the whole system's CPU and RAM use, so you can see how busy a node is without opening it. Nodes without servers yet show too. On TrueNAS, the ZFS cache is shown separately (hover over the bars) because TrueNAS frees it when programs need it.
+- **Hytale.** Create or import a Hytale server: Server Forge downloads it with the official downloader (sign in with your Hytale account in the Console when it asks), sets up Java 25, and handles start/stop, console commands, memory and UDP port 5520.
+- **Hytale mods.** Install `.jar` plugins and `.zip` asset packs on the Mods tab, turn them on and off, update and remove them. Buttons open CurseForge, Nexus Mods, Modtale, Thunderstore and BuiltByBit, and downloads show in the downloads panel.
+- **Server Forge for TrueNAS and Docker (experimental).** A container image with its own web page (HTTPS port 8191), Wine for Enshrouded and V Rising, and ClamAV for mod scans. The first login's password is in the app's log; you choose your own right after. It can be linked to a main panel as a node like any other system.
+- **Steam Workshop sign-in without a SteamCMD window**, in the container: type your Steam password and Steam Guard code on the Mods tab. They go to SteamCMD once and aren't saved.
+
+**Changed**
+- **Palworld: Pals per base** can go above 50 (up to 250). Above 50 needs a worker-limit mod on the server.
+- **Linux: Enshrouded and V Rising** keep Wine's output, and if the server crashes its last lines show in the Console.
+
+**Good to know**
+- Hytale hasn't been tried with a real Hytale account and server yet. Please report anything that doesn't work.
+- The container is a first version: it isn't on Docker Hub or in the TrueNAS app catalog yet.
+- A node shows its CPU and RAM once it runs this version too.
+
 ## SF Mod Manager 0.7.0
 
 SF Mod Manager now runs on Linux and SteamOS.

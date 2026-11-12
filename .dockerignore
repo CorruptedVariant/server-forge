@@ -1,0 +1,15 @@
+*
+!dist/
+!dist/**
+!public/
+!public/**
+!assets/
+!assets/**
+!scripts/
+!scripts/**
+!package.json
+!CHANGELOG.md
+!docker/
+!docker/Dockerfile
+!docker/container.mjs
+!docker/freshclam.conf

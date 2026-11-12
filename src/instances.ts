@@ -1,3 +1,4 @@
+import { hytale } from './games/hytale.ts';
 // Runs and watches game servers. Each server runs in its own hidden console, independent of the panel, so the
 // panel can restart or update without stopping games; on startup it re-attaches to servers that are still running.
 import { events } from './events.ts';
@@ -33,19 +34,29 @@ import { createBackup, restoreBackup, pruneScheduled, listBackups, backupsFolder
 import { assertModifiable, recycle } from './files.ts';
 
 // "terraria" is Terraria with tModLoader (its id from before vanilla existed); "terraria-vanilla" is the official server.
-export const GAMES: Record<string, GameModule> = { bedrock, java, valheim, 'terraria-vanilla': terrariaVanilla, terraria, satisfactory, spaceengineers: spaceEngineers, factorio, palworld, enshrouded, vrising, zomboid, sevendays: sevenDays };
+export const GAMES: Record<string, GameModule> = { bedrock, java, valheim, 'terraria-vanilla': terrariaVanilla, terraria, satisfactory, spaceengineers: spaceEngineers, factorio, palworld, enshrouded, vrising, zomboid, sevendays: sevenDays, hytale };
 
 // runner.ts in development, runner.js in the installed (compiled) app: same folder and extension as this file.
 const thisFile = fileURLToPath(import.meta.url);
 const RUNNER_SCRIPT = path.join(path.dirname(thisFile), `runner${path.extname(thisFile)}`);
 
 /** A Windows-only server under Wine, with its own Wine folder inside the server folder. Xvfb stands in for a screen when there's none. */
-function throughWine(launch: StartOptions, game: string, installDir: string): StartOptions {
+function throughWine(launch: StartOptions, game: string, installDir: string, outputFile: string): StartOptions {
   const wine = findOnPath('wine');
   if (!wine) throw new Error(wineHelp(game));
-  const env = { ...launch.env, WINEPREFIX: path.join(installDir, '.wine'), WINEDEBUG: '-all', WINEARCH: 'win64', WINEDLLOVERRIDES: 'mscoree,mshtml=' };
+  const env = { ...launch.env, WINEPREFIX: path.join(installDir, '.wine'), WINEDEBUG: 'fixme-all', WINEARCH: 'win64', WINEDLLOVERRIDES: 'mscoree,mshtml=' };
   const xvfb = findOnPath('xvfb-run');
-  return xvfb ? { ...launch, exe: xvfb, args: ['-a', wine, launch.exe, ...launch.args], env } : { ...launch, exe: wine, args: [launch.exe, ...launch.args], env };
+  // Wine's own errors (a missing library, a broken Wine folder) only show in its output: keep it for the crash note.
+  return xvfb ? { ...launch, exe: xvfb, args: ['-a', wine, launch.exe, ...launch.args], env, outputFile } : { ...launch, exe: wine, args: [launch.exe, ...launch.args], env, outputFile };
+}
+
+/** The last lines Wine printed for a server, for the console after a crash. */
+function wineTail(file: string): string[] {
+  try {
+    return readFileSync(file, 'utf-8').split('\n').map((l) => l.trim()).filter(Boolean).slice(-8);
+  } catch {
+    return [];
+  }
 }
 
 // ---------- the runner's own copy of the runtime (installed app) ----------
@@ -155,6 +166,11 @@ class ServerInstance {
     this.record = record;
     this.module = GAMES[record.game];
     this.parser = this.module.createParser();
+  }
+
+  /** Linux: what Wine printed while running this (Windows-only) server. */
+  get wineLog() {
+    return dataPath('servers', this.record.id, 'wine.log');
   }
 
   get logFile() {
@@ -340,6 +356,7 @@ class ServerInstance {
       this.readLog();
     } catch {}
     this.note('Server process exited unexpectedly.');
+    if (isLinux && this.module.linux === 'wine') for (const line of wineTail(this.wineLog)) this.note(`Wine: ${line}`);
     // Games with a crash checker: work out why before anything restarts it.
     if (this.module.diagnose) {
       try {
@@ -468,7 +485,11 @@ class ServerInstance {
       let launch = this.module.launch(this.record, this.logFile);
       if (isLinux && this.module.linux === 'unavailable') throw new Error(`${this.module.name} servers can't run on Linux.`);
       if (isLinux) makeExecutable(launch.exe);
-      if (isLinux && this.module.linux === 'wine') launch = throughWine(launch, this.module.name, this.record.installDir);
+      if (isLinux && this.module.linux === 'wine') {
+        mkdirSync(path.dirname(this.wineLog), { recursive: true });
+        writeFileSync(this.wineLog, '');
+        launch = throughWine(launch, this.module.name, this.record.installDir, this.wineLog);
+      }
       // On Linux, games that take typed commands read them from the runner's pipe (there's no console window to type into).
       if (this.module.commands || this.module.captureOutput || (isLinux && this.module.consoleCommands)) {
         // Games that read typed commands run under the runner, which owns their console (see runner.ts); so do games

@@ -39,6 +39,7 @@
     <input id="loginPass" type="password" autocomplete="current-password" required>
     <button class="primary" type="submit">Log in</button>
     <p class="error" id="loginError"></p>
+    <p class="muted small-text" id="loginContainerHint" hidden>First time? Log in as <b>sfadmin</b> with the starting password from this app's log (TrueNAS: Apps → server-forge → Logs). You'll choose your own password next.</p>
   </form>
 </section>
 
@@ -448,6 +449,8 @@
               <p class="muted small-text" id="addonWorkshopStatus"></p>
               <form class="with-button" id="steamLoginForm" hidden>
                 <input id="steamLoginUser" placeholder="Steam account name (it must own this game)" spellcheck="false" autocomplete="off">
+                <input id="steamLoginPass" type="password" placeholder="Steam password" autocomplete="off" hidden>
+                <input id="steamLoginCode" placeholder="Steam Guard code (if asked)" spellcheck="false" autocomplete="one-time-code" maxlength="5" class="steam-code" hidden>
                 <button class="primary" type="submit">Sign in to Steam</button>
               </form>
               <div class="addon-workshop-actions">
@@ -680,14 +683,17 @@
           <h3>Remote access</h3>
           <p class="muted">Lets people use the panel from other devices (another system, a phone, or over the internet with port forwarding).
             Uses HTTPS so passwords and API keys are encrypted. This system and the desktop app always work, even when it is off.</p>
+          <div id="remoteControls">
           <div class="remote-row">
             <label class="toggle"><input type="checkbox" id="remoteEnabled"> Remote access on</label>
             <label for="remotePort" class="inline-label">Port</label>
             <input id="remotePort" type="number" min="1024" max="65535" class="port-input">
             <button class="primary" id="btnRemoteSave">Apply</button>
           </div>
+          </div>
+          <p class="muted small-text" id="remoteContainerHelp" hidden>This Server Forge runs in a container, so remote access is always on: it's how you reach this page. Its port and firewall are set in the container's settings (TrueNAS: Apps → server-forge → Edit).</p>
           <div id="remoteStatus" class="remote-status"></div>
-          <div class="remote-help">
+          <div class="remote-help" id="remoteFirewallRow">
             <button class="small" id="btnFirewall">Allow through Windows Firewall…</button>
             <span class="muted small-text">Windows will ask for admin permission. Needed once so other devices can connect.</span>
           </div>

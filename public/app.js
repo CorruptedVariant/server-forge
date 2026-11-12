@@ -311,6 +311,12 @@ async function boot() {
     $('addInstall').placeholder = `${me.serverRoot}/My server`;
   }
   state.serverRoot = me.serverRoot ?? (me.build === 'development' ? 'C:\\GameServers\\Dev' : 'C:\\GameServers');
+  // The container's web page is always on (it's the only way in), and its ports are set where the container is.
+  state.container = !!me.container;
+  $('loginContainerHint').hidden = !me.container;
+  $('remoteControls').hidden = !!me.container;
+  $('remoteContainerHelp').hidden = !me.container;
+  $('remoteFirewallRow').hidden = !!me.container;
   if (me.needsSetup) return show('viewSetup');
   if (!me.user) return show('viewLogin');
   await enterApp(me.user);
@@ -357,7 +363,14 @@ async function enterApp(user) {
     openPasswordDialog(true);
     return;
   }
-  state.global = (await api('GET', '/api/me')).global ?? [];
+  const me = await api('GET', '/api/me');
+  // The container's starting password is in its log, where anyone who can read that sees it: choose your own first.
+  if (me.initialPassword) {
+    show('viewApp');
+    openPasswordDialog(true, "Choose your own password first. The starting one is in the app's log, where others can see it.");
+    return;
+  }
+  state.global = me.global ?? [];
   applyPermVisibility();
   show('viewApp');
   state.games = await api('GET', '/api/games');
@@ -484,6 +497,37 @@ function fillMiniStats(box, st) {
   );
 }
 
+// Each system's own CPU and RAM (this one and every node), shown under its name in the sidebar.
+let systemStats = null;
+
+/** A system's CPU/RAM under its name. Hidden when it has none (offline, or a node too old to report them). */
+function fillSystemStats(box, st) {
+  box.hidden = !st;
+  if (!st) return;
+  fillMiniStats(box, { cpu: st.cpu ?? 0, mem: st.mem.used, limit: st.mem.total });
+  const cache = st.mem.zfsCache > 0 ? `, plus ${fmtMem(st.mem.zfsCache)} ZFS cache (TrueNAS frees it when programs need it)` : '';
+  box.title = `Whole system: ${st.cores} CPU threads; ${fmtMem(st.mem.used)} of ${fmtMem(st.mem.total)} RAM in use${cache}.`;
+}
+
+let systemStatsLoading = false;
+async function updateSystemStats(first = false) {
+  if (document.hidden || systemStatsLoading || !state.user) return;
+  systemStatsLoading = true;
+  const before = Object.keys(systemStats?.nodes ?? {}).filter((id) => systemStats.nodes[id]).join();
+  try {
+    systemStats = await api('GET', '/api/system-stats');
+  } catch {
+    return;
+  } finally {
+    systemStatsLoading = false;
+  }
+  // A system came or went (e.g. a node with no servers went offline): redraw the list; otherwise just the numbers.
+  const now = Object.keys(systemStats.nodes ?? {}).filter((id) => systemStats.nodes[id]).join();
+  if (first || now !== before) return renderSidebar();
+  for (const box of document.querySelectorAll('#serverList .node-res')) fillSystemStats(box, box.dataset.node === 'local' ? systemStats.local : systemStats.nodes?.[box.dataset.node]);
+}
+setInterval(updateSystemStats, 5000);
+
 async function updateSidebarStats() {
   if (!state.servers?.size || document.hidden) return;
   try {
@@ -551,6 +595,8 @@ function renderSidebar() {
   const hasStorage = (nk) => storageOn && vaultFor(nk)?.state === 'ok';
   if (hasStorage('local') && !byNode.has('local')) byNode.set('local', { name: 'This System', servers: [] });
   for (const n of state.vault?.nodes ?? []) if (hasStorage(n.id) && !byNode.has(n.id)) byNode.set(n.id, { name: n.name, servers: [] });
+  // Connected systems with no servers yet still show, with their CPU/RAM.
+  for (const [id, st] of Object.entries(systemStats?.nodes ?? {})) if (st && !byNode.has(id)) byNode.set(id, { name: st.name, servers: [] });
   const multi = byNode.size > 1 || (byNode.size === 1 && !byNode.has('local'));
   const nodesInOrder = [...byNode].sort((a, b) => (a[0] === 'local' ? -1 : b[0] === 'local' ? 1 : a[1].name.localeCompare(b[1].name)));
   for (const [nk, info] of nodesInOrder) {
@@ -560,10 +606,16 @@ function renderSidebar() {
       head.append(el('span', `node-dot${offline ? ' off' : ''}`), el('span', null, info.name));
       if (offline) head.appendChild(el('span', 'node-state', 'offline'));
       nav.appendChild(head);
+      // The whole system's CPU and RAM, under its name.
+      const res = el('div', 'node-res');
+      res.dataset.node = nk;
+      fillSystemStats(res, nk === 'local' ? systemStats?.local : systemStats?.nodes?.[nk]);
+      nav.appendChild(res);
     }
     if (hasStorage(nk)) nav.appendChild(storageLink(nk, info.name));
     renderGameGroups(nav, info.servers, nk);
   }
+  if (!systemStats) updateSystemStats(true);
 }
 
 // ---------- storage (Tavern Vault) ----------
@@ -3564,7 +3616,7 @@ function renderNewFields() {
   }
   if (!game) return;
   const defaults = {
-    port: game.id === 'java' ? '25565' : '2456',
+    port: game.id === 'hytale' ? '5520' : game.id === 'java' ? '25565' : '2456',
     world: 'Dedicated',
     memoryMb: '4096',
     'prop:server-port': '19132',
@@ -3668,6 +3720,7 @@ const GAME_BLURBS = {
   terraria: 'Terraria with tModLoader mods. Players need tModLoader (free on Steam); it downloads the server’s mods by itself.',
   satisfactory: 'Factory building co-op. Works with the in-game Server Manager; mods through Satisfactory Mod Manager.',
   spaceengineers: 'Build ships and stations in space. Steam Workshop mods download to players by themselves.',
+  hytale: 'Explore and build in Hytale. Downloads need a Hytale account: follow the login link in Console. Java 25 is installed automatically. Uses UDP port 5520.',
   factorio: 'Build and automate factories, with or without Space Age. Needs your factorio.com login (Settings → Integrations); mods from the mod portal.',
   palworld: 'Catch Pals, build bases, survive together. Players, announcements and clean stops through its REST API.',
   enshrouded: 'Survival and base building in a foggy world. Up to 16 players, with password-protected roles.',
@@ -4330,9 +4383,12 @@ function renderAppUpdate() {
       box.appendChild(d);
     }
     if (!canInstall) {
-      box.appendChild(
-        el('p', 'muted small-text', state.build === 'development' ? 'This is the development panel: update the installed Server Forge instead.' : 'Install it from the Server Forge app on the system it runs on, or download it from GitHub.'),
-      );
+      const how = state.container
+        ? 'This Server Forge runs in a container: update it by replacing the container image (TrueNAS: update the server-forge app). Game servers are saved and started again by themselves.'
+        : state.build === 'development'
+          ? 'This is the development panel: update the installed Server Forge instead.'
+          : 'Install it from the Server Forge app on the system it runs on, or download it from GitHub.';
+      box.appendChild(el('p', 'muted small-text', how));
     }
   } else if (u.error) {
     box.appendChild(el('p', 'muted', `Couldn't check for updates: ${u.error}`));
@@ -5111,7 +5167,7 @@ const API_DOCS = [
     ['POST', '/api/servers/{id}/addons/check-updates', 'Newer versions available (Valheim: Thunderstore/Hexium; Bedrock: CurseForge, for linked addons)', 'See the server'],
     ['POST', '/api/servers/{id}/addons/{item}/update', 'Update one (Valheim; Bedrock: installs the newest CurseForge file on the chosen channel)', 'Manage mods / plugins / addons'],
     ['POST', '/api/servers/{id}/addons/{item}/curseforge', 'Bedrock: link an addon to a CurseForge project for updates: {"projectId":123}, or {"projectId":null} to unlink', 'Manage mods / plugins / addons'],
-    ['POST', '/api/servers/{id}/steam-login', 'Open SteamCMD on the server\'s PC to sign in for Workshop downloads: {"username":"..."} (owner only). Then POST /steam-login/confirm with the same body; DELETE /steam-login signs out', 'Owner'],
+    ['POST', '/api/servers/{id}/steam-login', 'Open SteamCMD on the server\'s PC to sign in for Workshop downloads: {"username":"..."} (owner only). Then POST /steam-login/confirm with the same body; DELETE /steam-login signs out. In the container (no SteamCMD window) send {"username","password","code"?} instead: it signs in directly and answers {"account"}', 'Owner'],
     ['POST', '/api/servers/{id}/addons/by-id', 'Add a mod by ID or link (Space Engineers: Steam Workshop): {"input":"https://steamcommunity.com/sharedfiles/filedetails/?id=…"}', 'Manage mods / plugins / addons'],
     ['GET', '/api/servers/{id}/addons/update-settings', 'Bedrock addon updates: {channel: "release"|"beta"|"alpha", auto}', 'See the server'],
     ['PUT', '/api/servers/{id}/addons/update-settings', 'Change them: {"channel":"beta","auto":true} (beta/alpha files only count when newer than the newest release)', 'Manage mods / plugins / addons'],
@@ -5269,10 +5325,10 @@ $('btnActivityRefresh').addEventListener('click', loadActivity);
 
 let passwordForced = false;
 /** forced = the account must choose a new password before it can do anything else. */
-function openPasswordDialog(forced = false) {
+function openPasswordDialog(forced = false, why = 'Your account needs a new password before you can continue.') {
   passwordForced = forced;
   $('accountForm').reset();
-  $('accountError').textContent = forced ? 'Your account needs a new password before you can continue.' : '';
+  $('accountError').textContent = forced ? why : '';
   $('accountCancel').textContent = forced ? 'Log out' : 'Cancel';
   $('accountDialog').showModal();
 }
@@ -5673,7 +5729,7 @@ function renderAddonSites() {
   const L = addonState.labels;
   const files = addonState.accept.split(',').join(' / ');
   $('addonSitesHelp').textContent = inApp
-    ? `Opens the site in a Server Forge window. Download any ${L.noun} (${files}) there and it's installed on "${state.detail.name}" automatically, with a warning if it doesn't match this server's version.`
+    ? `Opens the site in a Server Forge window. Download any ${L.noun} (${files}) there and it's installed on "${state.detail.name}" automatically.${state.detail.game === 'hytale' ? ' Check the mod page for Hytale version compatibility and required dependencies.' : " A warning is shown if it doesn't match this server's version."}`
     : `Opens the site in a new tab. Download a ${L.noun} there, then drop the file in the box above. (In the Server Forge desktop app, downloads install by themselves.)`;
   for (const link of addonState.links) {
     const btn = el('button', 'site-btn');
@@ -5758,12 +5814,15 @@ function renderWorkshop() {
   $('addonByIdForm').hidden = !addonState.canAddById || !ready;
   $('btnBrowseWorkshop').hidden = !ready;
   $('steamLoginForm').hidden = ready || !w.canSignIn;
+  // No SteamCMD window where Server Forge runs (the container): the password and code are typed here instead.
+  $('steamLoginPass').hidden = $('steamLoginCode').hidden = !w.signInHere;
   $('btnSteamConfirm').hidden = ready || !steamLoginPending;
   $('btnSteamSignOut').hidden = !w.needsLogin || !w.account || !w.canSignIn;
   const how = inApp ? 'Browse, open a mod, and press the blue Install button on its page, or paste its link below.' : 'Browse, open a mod, copy its link and paste it below.';
   if (!w.needsLogin) $('addonWorkshopStatus').textContent = `${how} No Steam sign-in is needed: this game's server downloads its own mods.`;
   else if (w.account) $('addonWorkshopStatus').textContent = `Signed in on this server's PC as ${w.account}. ${how}`;
   else if (steamLoginPending) $('addonWorkshopStatus').textContent = "A SteamCMD window opened on this server's PC. Type your password and Steam Guard code there (Server Forge never sees them), then close it and press I've signed in.";
+  else if (w.canSignIn && w.signInHere) $('addonWorkshopStatus').textContent = "Downloading Workshop mods needs a Steam account that owns this game. Your password goes straight to Steam's SteamCMD and isn't saved. If your Steam app asks you to approve the sign-in, approve it there.";
   else if (w.canSignIn) $('addonWorkshopStatus').textContent = "Downloading Workshop mods needs a Steam account that owns this game. You sign in on this server's PC, in SteamCMD's own window.";
   else $('addonWorkshopStatus').textContent = "Downloading Workshop mods needs a Steam account that owns this game. Only the owner can sign in.";
 }
@@ -5772,12 +5831,26 @@ let steamLoginPending = false;
 
 $('steamLoginForm').addEventListener('submit', async (e) => {
   e.preventDefault();
+  const here = !!addonState.workshop?.signInHere;
+  const btn = $('steamLoginForm').querySelector('button[type="submit"]');
+  btn.disabled = true;
+  if (here) btn.textContent = 'Signing in…';
   try {
-    await api('POST', `/api/servers/${state.selected}/steam-login`, { username: $('steamLoginUser').value.trim() });
-    steamLoginPending = true;
-    renderWorkshop();
+    const body = { username: $('steamLoginUser').value.trim() };
+    if (here) Object.assign(body, { password: $('steamLoginPass').value, code: $('steamLoginCode').value.trim() });
+    await api('POST', `/api/servers/${state.selected}/steam-login`, body);
+    if (here) {
+      $('steamLoginPass').value = $('steamLoginCode').value = '';
+      await loadAddons();
+    } else {
+      steamLoginPending = true;
+      renderWorkshop();
+    }
   } catch (err) {
     toast(err.message, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Sign in to Steam';
   }
 });
 

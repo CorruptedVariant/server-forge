@@ -1,6 +1,6 @@
 import http from 'node:http';
 import { currentDownloads, withDownloads } from './platform/mod-downloads.ts';
-import { exampleFolder } from './platform/host.ts';
+import { exampleFolder, isContainer } from './platform/host.ts';
 import { readFileSync, existsSync, writeFileSync, createWriteStream, createReadStream, statSync, mkdirSync, rmSync, openSync, readSync, writeSync, closeSync } from 'node:fs';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
@@ -12,11 +12,11 @@ import { linkPacks, unlinkPack, getUpdateSettings, setUpdateSettings } from './g
 import { listProxyServers, addProxyServer, removeProxyServer, setDefaultProxyServer, proxyName, prepareBackend } from './games/bungee-network.ts';
 import { downloadNexus, nexusPackage, NEXUS_GAMES } from './nexus.ts';
 import { nexusKey, nexusUser, setNexusKey, NEXUS_APP } from './nexus-key.ts';
-import { steamAccount, openSteamLogin, confirmSteamLogin, steamSignOut } from './steamcmd.ts';
+import { steamAccount, openSteamLogin, confirmSteamLogin, steamSignOut, steamLoginInPanel, steamLoginWithPassword } from './steamcmd.ts';
 import { factorioStatus, setFactorioLogin, importFactorioLogin } from './factorio-key.ts';
 import { getDiscord, setDiscord, testDiscord, startDiscordNotifications, NOTIFY_EVENTS } from './discord.ts';
 import { downloadFile } from './download.ts';
-import { serverStats } from './stats.ts';
+import { serverStats, systemCpuUsage, systemMemory } from './stats.ts';
 import { knownPlayers, setPlayerNote, setPlayerMuted } from './players.ts';
 import { listTasks, createTask, updateTask, deleteTask, deleteTasksFor, runTaskNow } from './scheduler.ts';
 import { rootDir, readJson, writeJson, dataPath, isDev } from './store.ts';
@@ -304,7 +304,14 @@ route('GET', '/api/me', async ({ user, principal, remote }) => ({
   global: principal ? (principal.owner ? [...GLOBAL_PERMS] : principal.grants.global) : [],
   needsSetup: !auth.hasUsers(),
   remote,
+  // The container image: its web page is the only way in, and it's updated by replacing the image.
+  container: isContainer,
+  // The owner still has the starting password the container wrote to its log (changing it removes the file).
+  initialPassword: isContainer && !!user && user.role === 'owner' && existsSync(dataPath(CONTAINER_OWNER)),
 }));
+
+/** The container's first owner login, shown in its log until the owner chooses their own password. */
+const CONTAINER_OWNER = 'container-owner.json';
 
 route('POST', '/api/setup', async (ctx) => {
   if (auth.hasUsers()) throw new HttpError(403, 'Setup is already done.');
@@ -364,6 +371,7 @@ route('PUT', '/api/me/password', async (ctx) => {
   } catch (err) {
     throw new HttpError(400, (err as Error).message);
   }
+  if (isContainer && ctx.user.role === 'owner') rmSync(dataPath(CONTAINER_OWNER), { force: true });
   ctx.res.setHeader('Set-Cookie', sessionCookie(ctx, auth.createSession(ctx.user.id), 7 * 86400));
   logActivity({ at: Date.now(), who: ctx.user.username, kind: 'user', id: ctx.user.id, what: 'changed their password' });
   return {};
@@ -604,7 +612,8 @@ route('DELETE', '/api/nodes/:id', async (ctx) => {
 // servers (every server permission, plus creating/copying servers) but not manage users or panel settings.
 route('POST', '/api/node-code', async (ctx) => {
   const p = needGlobal(ctx, 'panel.settings');
-  if (ctx.remote) throw new HttpError(403, 'Make node codes on this system itself.');
+  // In the container the web page is the system itself: there's no other place to make the code.
+  if (ctx.remote && !(isContainer && p.owner)) throw new HttpError(403, 'Make node codes on this system itself.');
   const status = remoteStatus(config.remote);
   if (!config.remote.enabled || !status.listening) throw new HttpError(409, 'Turn on Remote access first (above): the main panel connects to this system through it.');
   const fingerprint = await certFingerprint();
@@ -1112,7 +1121,7 @@ route('GET', '/api/servers/:id/addons', async (ctx) => {
     // Added by ID or link instead of a file (Space Engineers: Steam Workshop).
     canAddById: !!addons.addById,
     byIdPlaceholder: addons.addByIdPlaceholder ?? null,
-    workshop: addons.workshop ? { ...addons.workshop, account: steamAccount(), canSignIn: !!ctx.principal?.owner } : null,
+    workshop: addons.workshop ? { ...addons.workshop, account: steamAccount(), canSignIn: !!ctx.principal?.owner, signInHere: steamLoginInPanel() } : null,
     share: addons === inst.module.addons && canShare(inst.record.game) ? { enabled: !!shareToken(inst.id) } : null,
     locations: addons.locations
       ? { options: addons.locations.options, current: addons.locations.get(inst.record), paths: addons.locations.describe(inst.record) }
@@ -1558,11 +1567,17 @@ function steamLoginAccess(ctx: Ctx, id: string) {
   return p;
 }
 
-// Opens SteamCMD's window on that PC. Body: {"username": "..."}.
+// Opens SteamCMD's window on that PC. Body: {"username": "..."}. Where there's no window (the container), the form
+// sends {"username", "password", "code"?} and this signs in directly, answering {"account"}.
 route('POST', '/api/servers/:id/steam-login', async (ctx) => {
-  steamLoginAccess(ctx, ctx.params[0]);
-  const { username } = await readBody(ctx.req);
+  const p = steamLoginAccess(ctx, ctx.params[0]);
+  const { username, password, code } = await readBody(ctx.req);
   try {
+    if (steamLoginInPanel()) {
+      const account = await steamLoginWithPassword(username, password, code);
+      audit(p, `signed in to Steam as ${account} for Workshop downloads`);
+      return { account };
+    }
     await openSteamLogin(username);
   } catch (err) {
     throw new HttpError(400, (err as Error).message);
@@ -1737,7 +1752,7 @@ route('PUT', '/api/servers/:id/addons/update-settings', async (ctx) => {
 route('POST', '/api/servers/:id/addons/nexus', async (ctx) => {
   const p = needServer(ctx, 'addons.manage', ctx.params[0]);
   const { inst, addons } = addonsOf(ctx.params[0], true);
-  if (!NEXUS_GAMES[inst.record.game]) throw new HttpError(400, 'Nexus Mods downloads are for Valheim and Palworld servers.');
+  if (!NEXUS_GAMES[inst.record.game]) throw new HttpError(400, 'Nexus Mods downloads are supported for Valheim, Palworld and Hytale servers.');
   const key = nexusKey();
   if (!key) throw new HttpError(400, 'Add your Nexus Mods API key first (Settings → Integrations).');
   const { input } = await readBody(ctx.req);
@@ -1751,7 +1766,14 @@ route('POST', '/api/servers/:id/addons/nexus', async (ctx) => {
     } catch (err) {
       throw new HttpError(400, (err as Error).message);
     }
-    const result = await addons.install(inst.record, local, `Nexus Mods: ${info.modName}`, nexusPackage(info));
+    // Hytale plugins must retain their .jar extension; the shared downloader uses a temporary mod.zip.
+    let installFile = local;
+    if (inst.record.game === 'hytale') {
+      if (!/\.(jar|zip)$/i.test(info.fileName)) throw new HttpError(400, 'Choose a Hytale .jar plugin or .zip asset pack.');
+      installFile = path.join(dir, path.basename(info.fileName).replace(/[^\w. +()-]/g, '_'));
+      if (installFile !== local) writeFileSync(installFile, readFileSync(local));
+    }
+    const result = await addons.install(inst.record, installFile, `Nexus Mods: ${info.modName}`, nexusPackage(info));
     audit(p, `installed "${info.modName}" ${info.version} from Nexus Mods on "${inst.record.name}"`);
     return { ...result, running: inst.isRunning };
   } finally {
@@ -2370,6 +2392,24 @@ route('GET', '/api/stats', async (ctx) => {
       }),
   );
   return out;
+});
+
+// Each system's CPU and RAM (this one and every node), for the sidebar's system headings. Nodes too old to answer are
+// left out.
+// Nodes carry their name, so a system with no servers yet still gets its heading.
+type SystemStats = ReturnType<typeof systemCpuUsage> & { mem: ReturnType<typeof systemMemory> };
+route('GET', '/api/system-stats', async (ctx) => {
+  need(ctx);
+  const nodes: Record<string, (SystemStats & { name: string }) | null> = {};
+  await Promise.all(
+    listNodes()
+      .filter((n) => n.online && n.kind !== 'vault')
+      .map(async (n) => {
+        const st = await nodeJson<{ local: SystemStats }>(getNode(n.id), 'GET', '/api/system-stats', undefined, 10_000).then((r) => r?.local ?? null, () => null);
+        nodes[n.id] = st ? { ...st, name: n.name } : null;
+      }),
+  );
+  return { local: { ...systemCpuUsage(), mem: systemMemory() }, nodes };
 });
 
 route('GET', '/api/servers/:id/stats', async (ctx) => {

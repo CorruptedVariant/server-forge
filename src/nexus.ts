@@ -8,7 +8,7 @@ import { downloadTo } from './valheim-mods.ts';
 const API = 'https://api.nexusmods.com/v1';
 export const NEXUS_GAME = 'valheim';
 /** Games whose Nexus files can be installed (nexusmods.com/<domain>), with their names for messages. */
-export const NEXUS_GAMES: Record<string, string> = { valheim: 'Valheim', palworld: 'Palworld' };
+export const NEXUS_GAMES: Record<string, string> = { valheim: 'Valheim', palworld: 'Palworld', hytale: 'Hytale' };
 
 export interface NexusUser {
   name: string;

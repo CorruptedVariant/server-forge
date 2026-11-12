@@ -1,7 +1,7 @@
 // Starting, stopping and watching game server processes. Windows uses the helper scripts in scripts/; on Linux a program
 // is its own process group (so it outlives the panel), a graceful stop is SIGINT, and /proc answers the questions.
 import { execFile, spawn } from 'node:child_process';
-import { chmodSync, readFileSync, readdirSync, readlinkSync, statSync } from 'node:fs';
+import { chmodSync, closeSync, openSync, readFileSync, readdirSync, readlinkSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -31,6 +31,8 @@ export interface StartOptions {
   args: string[];
   cwd: string;
   env?: Record<string, string>;
+  /** Linux: append the program's output here instead of dropping it (Wine's errors, for a crash). */
+  outputFile?: string;
 }
 
 /** Programs keeping `target` (file or folder) busy, e.g. "File Explorer (window open at C:\...)". Best effort. */
@@ -98,7 +100,9 @@ export async function startHidden(opts: StartOptions): Promise<number> {
   if (isLinux) {
     makeExecutable(opts.exe);
     return new Promise((resolve, reject) => {
-      const child = spawn(opts.exe, opts.args, { cwd: opts.cwd, env: { ...process.env, ...opts.env }, detached: true, stdio: 'ignore' });
+      const out = opts.outputFile ? openSync(opts.outputFile, 'a') : null;
+      const child = spawn(opts.exe, opts.args, { cwd: opts.cwd, env: { ...process.env, ...opts.env }, detached: true, stdio: out === null ? 'ignore' : ['ignore', out, out] });
+      if (out !== null) closeSync(out);
       child.once('error', (err) => reject(new Error(`Could not start ${path.basename(opts.exe)}: ${err.message}`)));
       child.once('spawn', () => {
         child.unref();
