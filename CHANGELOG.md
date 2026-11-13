@@ -1,5 +1,17 @@
 # Changelog
 
+## SF Mod Manager 0.7.1
+
+Security update for shared mod links.
+
+**Fixed**
+- Verify the server's pinned TLS certificate before sending the share-link token or requesting mod files. A server presenting the wrong certificate is refused before it receives the request.
+
+**Changed**
+- Updated GitHub links to CorruptedVariant.
+
+Windows and Linux packages are included. Existing installations receive this normal update through the same updater; the app remains labelled Beta.
+
 ## Server Forge 0.12.0
 
 Move game servers between systems, stronger network security, and a downloadable Docker package.
