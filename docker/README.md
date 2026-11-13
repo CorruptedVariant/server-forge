@@ -41,4 +41,4 @@ Persistent data includes SF accounts, certificates, node keys, backups, game bin
 
 On a normal Docker/TrueNAS stop, the supervisor asks SF to stop local game servers and waits for them to finish saving before exiting. It remembers which games were running and starts them after the next container launch. A forced kill or power failure cannot guarantee a final save. Allow the full two-minute stop grace period.
 
-Update by rebuilding/replacing the container image, preserving the state mount. The panel's Update card says so in the container instead of offering the desktop installer. This image is currently a local build; it is not a published Docker Hub/TrueNAS catalog release.
+Update by rebuilding/replacing the container image, preserving the state mount. The panel's Update card says so in the container instead of offering the desktop installer. Starting with 0.12.0, GitHub and the website offer a versioned Docker download containing a built Linux x86-64 image, Compose files, the Dockerfile and compiled application. See RELEASE-README.md for loading, TrueNAS setup and updates. This is not a Docker Hub/TrueNAS catalog listing.

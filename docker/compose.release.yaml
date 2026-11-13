@@ -1,0 +1,19 @@
+services:
+  server-forge:
+    image: server-forge:@VERSION@
+    pull_policy: never
+    init: true
+    network_mode: host
+    user: "${SF_UID:-3002}:${SF_GID:-3002}"
+    restart: unless-stopped
+    stop_grace_period: 2m
+    mem_limit: ${SF_MEMORY_LIMIT:-8g}
+    pids_limit: 4096
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    environment:
+      TZ: ${TZ:-Etc/UTC}
+      PANEL_CONTAINER: "1"
+      NODE_OPTIONS: --max-old-space-size=256
+    volumes:
+      - ${SF_STATE_DIR:?Set SF_STATE_DIR to a persistent directory}:/srv/server-forge

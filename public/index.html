@@ -47,7 +47,7 @@
   <header class="topbar">
     <div class="top-left">
       <span class="version" id="appVersion"></span>
-      <span class="credit">Created by CorruptedVariant · <a href="https://github.com/Volatile111/sf-mod-manager-releases/releases/latest" target="_blank" rel="noopener" title="SF Mod Manager: keeps players' Valheim mods matched to your server">Get the player mod manager</a></span>
+      <span class="credit">Created by CorruptedVariant · <a href="https://github.com/CorruptedVariant/sf-mod-manager-releases/releases/latest" target="_blank" rel="noopener" title="SF Mod Manager: keeps players' Valheim mods matched to your server">Get the player mod manager</a></span>
     </div>
     <div class="brand"><img src="/logo.svg" alt="" width="40" height="40" id="brandLogo"><span>Server Forge</span></div>
     <div class="top-right">
@@ -124,6 +124,7 @@
           <span class="pill" id="svStatus"></span>
           <div class="spacer"></div>
           <button class="ghost" data-perm="files.view" id="btnServerFiles" title="Browse and edit this server's files">📁 Files</button>
+          <button class="ghost" data-perm="server.delete" id="btnMove" title="Move this server, with its world, mods, settings and backups, to another system" hidden>⇄ Move…</button>
           <div class="controls">
             <button class="green" data-perm="control.start" id="btnStart">Start</button>
             <button class="red" data-perm="control.stop" id="btnStop">Stop</button>
@@ -479,9 +480,9 @@
             <p class="muted" id="shareIntro">Players install <b>SF Mod Manager</b>, paste this link once, and their game gets the same mods as this server: new mods are added, updated mods are updated and removed mods are removed (their own extra mods are left alone). "Server only" mods aren't shared.</p>
             <div class="share-link">
               <span class="muted small">Player download:</span>
-              <code id="clientDownloadUrl">https://github.com/Volatile111/sf-mod-manager-releases/releases/latest</code>
+              <code id="clientDownloadUrl">https://github.com/CorruptedVariant/sf-mod-manager-releases/releases/latest</code>
               <button type="button" class="small" id="btnCopyClientUrl">Copy</button>
-              <a class="small button-like" href="https://github.com/Volatile111/sf-mod-manager-releases/releases/latest" target="_blank" rel="noopener">Open</a>
+              <a class="small button-like" href="https://github.com/CorruptedVariant/sf-mod-manager-releases/releases/latest" target="_blank" rel="noopener">Open</a>
             </div>
             <div id="shareBody"></div>
           </section>
@@ -761,7 +762,7 @@
             <button class="small" id="btnUpdateFile" hidden>Update from file…</button>
             <span class="muted small-text" id="updateStatus"></span>
           </div>
-          <p class="muted small-text">New versions come from <a href="https://github.com/Volatile111/server-forge/releases" target="_blank" rel="noopener">GitHub releases</a> and are checked every 6 hours.
+          <p class="muted small-text">New versions come from <a href="https://github.com/CorruptedVariant/server-forge/releases" target="_blank" rel="noopener">GitHub releases</a> and are checked every 6 hours.
             Installing closes the panel and opens it again by itself; game servers keep running.
             <span id="updateFileHelp" hidden>"Update from file" installs an installer you already have (any version, including going back).</span></p>
         </section>
@@ -918,7 +919,7 @@
     <section class="rebrand-release" aria-labelledby="rebrandReleaseTitle">
       <h3 id="rebrandReleaseTitle">What's new in Server Forge <span id="rebrandReleaseVersion">0.9.0</span></h3>
       <div id="rebrandReleaseBody" class="whats-new"></div>
-      <a class="small-text" href="https://github.com/Volatile111/server-forge/releases" target="_blank" rel="noopener">All releases</a>
+      <a class="small-text" href="https://github.com/CorruptedVariant/server-forge/releases" target="_blank" rel="noopener">All releases</a>
     </section>
     </div>
     <div class="rebrand-footer"><p id="rebrandCountdown" role="status">Please take a moment to read about the new name.</p><button type="button" class="primary" id="rebrandContinue" disabled>Continue in 10 seconds</button></div>
@@ -944,7 +945,7 @@
     <h2 id="whatsNewTitle"></h2>
     <div id="whatsNewBody" class="whats-new"></div>
     <div class="form-actions">
-      <a href="https://github.com/Volatile111/server-forge/releases" target="_blank" rel="noopener" class="small-text">All releases</a>
+      <a href="https://github.com/CorruptedVariant/server-forge/releases" target="_blank" rel="noopener" class="small-text">All releases</a>
       <div class="spacer"></div><button class="primary" id="whatsNewClose">Got it</button>
     </div>
   </div>
@@ -1002,14 +1003,14 @@
     <h2><img src="/logo.svg" alt="" width="32" height="32"> Server Forge <span class="muted" id="aboutVersion"></span></h2>
     <p><span class="build-badge beta">Beta</span> Server Forge is actively being worked on and updates are frequent. If something goes wrong, please report it.</p>
     <div class="about-links">
-      <a class="button-like" id="aboutReport" href="https://github.com/Volatile111/server-forge/issues/new/choose" target="_blank" rel="noopener">Report a problem</a>
-      <a class="button-like" href="https://github.com/Volatile111/server-forge/issues" target="_blank" rel="noopener">Known problems</a>
-      <a class="button-like" href="https://github.com/Volatile111/server-forge/releases" target="_blank" rel="noopener">What's new</a>
-      <a class="button-like" href="https://github.com/Volatile111/sf-mod-manager-releases/releases/latest" target="_blank" rel="noopener">Player mod manager</a>
-      <a class="button-like" href="https://github.com/Volatile111/server-forge/blob/main/API.md" target="_blank" rel="noopener">API reference</a>
+      <a class="button-like" id="aboutReport" href="https://github.com/CorruptedVariant/server-forge/issues/new/choose" target="_blank" rel="noopener">Report a problem</a>
+      <a class="button-like" href="https://github.com/CorruptedVariant/server-forge/issues" target="_blank" rel="noopener">Known problems</a>
+      <a class="button-like" href="https://github.com/CorruptedVariant/server-forge/releases" target="_blank" rel="noopener">What's new</a>
+      <a class="button-like" href="https://github.com/CorruptedVariant/sf-mod-manager-releases/releases/latest" target="_blank" rel="noopener">Player mod manager</a>
+      <a class="button-like" href="https://github.com/CorruptedVariant/server-forge/blob/main/API.md" target="_blank" rel="noopener">API reference</a>
     </div>
-    <p class="muted small-text">Created by CorruptedVariant. Free software under the <a href="https://github.com/Volatile111/server-forge/blob/main/LICENSE" target="_blank" rel="noopener">GNU GPL v3</a>:
-      you may use, change and share it, and the <a href="https://github.com/Volatile111/server-forge" target="_blank" rel="noopener">source code</a> is public. It comes with no warranty.
+    <p class="muted small-text">Created by CorruptedVariant. Free software under the <a href="https://github.com/CorruptedVariant/server-forge/blob/main/LICENSE" target="_blank" rel="noopener">GNU GPL v3</a>:
+      you may use, change and share it, and the <a href="https://github.com/CorruptedVariant/server-forge" target="_blank" rel="noopener">source code</a> is public. It comes with no warranty.
       Not affiliated with Mojang, Microsoft, Iron Gate or Coffee Stain.</p>
     <div class="form-actions"><div class="spacer"></div><button id="aboutClose">Close</button></div>
   </div>
@@ -1036,6 +1037,29 @@
     <div class="form-actions">
       <button class="primary" type="submit">Make the copy</button>
       <button type="button" class="ghost" id="cloneCancel">Cancel</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="moveDialog">
+  <form id="moveForm" class="dialog-body">
+    <h2>Move <span id="moveSource"></span></h2>
+    <div id="moveSetup">
+      <p class="muted small-text">Everything goes: the server, its world, mods, settings, ports, scheduled tasks and backups. If it's running, it's stopped (and saves) first.</p>
+      <label for="moveTarget">Move it to</label>
+      <select id="moveTarget" required></select>
+      <label class="toggle"><input type="checkbox" id="moveKeepOld"> Keep the old copy there (stopped)</label>
+      <p class="muted small-text">Otherwise the old copy is removed once the move has worked; its files go to the Recycle Bin (Trash on Linux) on that system.</p>
+    </div>
+    <div id="moveProgress" hidden>
+      <div class="job-bar" id="moveBarBox"><div id="moveBar"></div></div>
+      <p class="job-step" id="moveStep"></p>
+      <ul class="muted small-text" id="moveNotes"></ul>
+    </div>
+    <p class="error" id="moveError"></p>
+    <div class="form-actions">
+      <button class="primary" type="submit" id="moveSubmit">Move server</button>
+      <button type="button" class="ghost" id="moveClose">Cancel</button>
     </div>
   </form>
 </dialog>

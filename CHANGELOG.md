@@ -1,5 +1,27 @@
 # Changelog
 
+## Server Forge 0.12.0
+
+Move game servers between systems, stronger network security, and a downloadable Docker package.
+
+**New**
+- **Move servers between systems:** use the Move button to send a server to this system or a connected node. SF saves and stops running servers first, transfers server files, worlds, mods, settings, ports, scheduled tasks and backups, and reinstalls game software when crossing Windows/Linux. Keep the old copy if you want; otherwise it goes to that system's Recycle Bin/Trash after a successful transfer.
+- **Docker download for Linux x86-64 / TrueNAS (experimental):** includes a built versioned image, Dockerfile, compiled application, Compose files and setup/update instructions. Load the image locally; no Docker Hub account is needed. The container has a standalone HTTPS web UI and can link to a master panel. Builds check startup, owner setup, private data/key permissions and graceful shutdown.
+
+**Security fixes**
+- Check a node's pinned TLS certificate before sending its access key. SF Mod Manager's matching share-token fix is released separately as 0.7.1.
+- Validate incoming move identifiers, settings and destinations; cancellation only removes the move's own files. Reject external, cyclic or unresolvable symbolic links, including Linux case-sensitive and link-chain escapes.
+- Restrict Linux data-directory access and newly written credential files; hide system paths/version details before login.
+- Restrict move progress and server-removal notifications to authorized accounts. Add account-wide remote login throttling and clean up expired failure records.
+
+**Changed**
+- Updated GitHub links to CorruptedVariant.
+
+**Good to know**
+- Update the master and every participating node before moving servers.
+- A disposable Minecraft server passed Windows to TrueNAS and back, including starting on both systems and identical backup checksums. Live modded Valheim/Palworld and very large moves have not been verified.
+- Docker remains experimental, especially Wine game servers and Workshop downloads requiring a real Steam login. It is a downloadable package, not a TrueNAS catalog or Docker Hub listing.
+
 ## Server Forge 0.11.0
 
 Server Forge can now run on a TrueNAS (or any Docker) system, adds Hytale, and shows each system's CPU and RAM.

@@ -2,6 +2,8 @@
 // makes the game's mods match it. Mods the player installed themselves are left alone; mods that came from the link
 // and were dropped by the server are removed.
 import https from 'node:https';
+import net from 'node:net';
+import tls from 'node:tls';
 import { trackDownload } from '../platform/mod-downloads.ts';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { scanPackage, type ScanResult } from '../modscan.ts';
@@ -78,8 +80,38 @@ export function parseLink(text: string): Link {
   return { host: m[1], port: Number(m[2]), token: m[3], fingerprint, raw };
 }
 
+const unreachable = (link: Link, err: Error) =>
+  new Error(/ECONNREFUSED|EHOSTUNREACH|ETIMEDOUT|ENOTFOUND/.test(`${(err as NodeJS.ErrnoException).code} ${err.message}`) ? `Can't reach ${link.host}:${link.port}. Is Server Forge running there with Remote access on?` : err.message);
+
+/**
+ * A TLS connection to the link's server, checked against the link's fingerprint before anything is sent (the request
+ * path carries the share token, so a system pretending to be the server must never see it).
+ */
+function pinnedSocket(link: Link): Promise<tls.TLSSocket> {
+  return new Promise((resolve, reject) => {
+    // The server's certificate is self-signed: skip the normal CA check and compare fingerprints instead.
+    const socket = tls.connect({ host: link.host, port: link.port, rejectUnauthorized: false, ...(net.isIP(link.host) ? {} : { servername: link.host }) });
+    const timer = setTimeout(() => socket.destroy(Object.assign(new Error('timed out'), { code: 'ETIMEDOUT' })), 20_000);
+    socket.once('secureConnect', () => {
+      clearTimeout(timer);
+      const fp = String(socket.getPeerCertificate()?.fingerprint256 ?? '').replace(/:/g, '').toUpperCase();
+      if (!fp || fp !== link.fingerprint) {
+        socket.destroy();
+        reject(new Error("The server's security certificate doesn't match the link. Ask the server owner for a fresh link."));
+        return;
+      }
+      resolve(socket);
+    });
+    socket.once('error', (err) => {
+      clearTimeout(timer);
+      reject(unreachable(link, err));
+    });
+  });
+}
+
 /** GET over HTTPS, trusting only the certificate whose fingerprint is in the link. */
-export function pinnedGet(link: Link, urlPath: string, asBuffer = false): Promise<Buffer | string> {
+export async function pinnedGet(link: Link, urlPath: string, asBuffer = false): Promise<Buffer | string> {
+  const socket = await pinnedSocket(link);
   return new Promise((resolve, reject) => {
     const req = https.get(
       {
@@ -87,19 +119,10 @@ export function pinnedGet(link: Link, urlPath: string, asBuffer = false): Promis
         port: link.port,
         path: urlPath,
         timeout: 20_000,
-        // The server's certificate is self-signed: skip the normal CA check and compare fingerprints instead.
-        rejectUnauthorized: false,
-        // A fresh connection every time: a reused/resumed TLS session doesn't carry the certificate to check.
-        agent: false,
+        // The connection checked above, for this one request.
+        createConnection: () => socket,
       },
       (res) => {
-        const cert = (res.socket as import('node:tls').TLSSocket).getPeerCertificate();
-        const fp = String(cert?.fingerprint256 ?? '').replace(/:/g, '').toUpperCase();
-        if (fp !== link.fingerprint) {
-          res.destroy();
-          reject(new Error("The server's security certificate doesn't match the link. Ask the server owner for a fresh link."));
-          return;
-        }
         const chunks: Buffer[] = [];
         // Mod files from the server show in the progress panel (the mod list itself isn't worth a row).
         const tracked = asBuffer ? trackDownload(decodeURIComponent(urlPath.split('/').pop() ?? 'mod')) : null;
@@ -125,7 +148,7 @@ export function pinnedGet(link: Link, urlPath: string, asBuffer = false): Promis
       },
     );
     req.on('timeout', () => req.destroy(new Error('The server did not answer (is it on, and is the port forwarded?).')));
-    req.on('error', (err) => reject(new Error(/ECONNREFUSED|EHOSTUNREACH|ETIMEDOUT|ENOTFOUND/.test(err.message) ? `Can't reach ${link.host}:${link.port}. Is Server Forge running there with Remote access on?` : err.message)));
+    req.on('error', (err) => reject(unreachable(link, err)));
   });
 }
 

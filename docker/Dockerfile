@@ -22,7 +22,7 @@ COPY package.json CHANGELOG.md ./
 COPY docker/container.mjs ./container.mjs
 COPY docker/freshclam.conf ./freshclam.conf
 ENV NODE_ENV=production PANEL_CONTAINER=1 PANEL_DATA_DIR=/srv/server-forge/data HOME=/srv/server-forge TMPDIR=/srv/server-forge/tmp
-LABEL org.opencontainers.image.title="Server Forge" org.opencontainers.image.description="Game server control panel (web UI on HTTPS 8191)" org.opencontainers.image.source="https://github.com/Volatile111/server-forge"
+LABEL org.opencontainers.image.title="Server Forge" org.opencontainers.image.description="Game server control panel (web UI on HTTPS 8191)" org.opencontainers.image.source="https://github.com/CorruptedVariant/server-forge"
 USER 3002:3002
 STOPSIGNAL SIGTERM
 EXPOSE 8191/tcp

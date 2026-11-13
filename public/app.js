@@ -295,6 +295,14 @@ function showBuild(build) {
 
 async function boot() {
   const me = await api('GET', '/api/me');
+  applyMe(me);
+  if (me.needsSetup) return show('viewSetup');
+  if (!me.user) return show('viewLogin');
+  await enterApp(me.user);
+}
+
+/** What /api/me says about this system. Before login it leaves out the version, platform and folders, so it runs again after. */
+function applyMe(me) {
   $('appVersion').textContent = me.version ? `v${me.version}` : '';
   state.panel = me.panel ?? null;
   showBuild(me.build);
@@ -317,9 +325,6 @@ async function boot() {
   $('remoteControls').hidden = !!me.container;
   $('remoteContainerHelp').hidden = !me.container;
   $('remoteFirewallRow').hidden = !!me.container;
-  if (me.needsSetup) return show('viewSetup');
-  if (!me.user) return show('viewLogin');
-  await enterApp(me.user);
 }
 
 $('setupForm').addEventListener('submit', async (e) => {
@@ -364,6 +369,7 @@ async function enterApp(user) {
     return;
   }
   const me = await api('GET', '/api/me');
+  applyMe(me);
   // The container's starting password is in its log, where anyone who can read that sees it: choose your own first.
   if (me.initialPassword) {
     show('viewApp');
@@ -523,6 +529,7 @@ async function updateSystemStats(first = false) {
   }
   // A system came or went (e.g. a node with no servers went offline): redraw the list; otherwise just the numbers.
   const now = Object.keys(systemStats.nodes ?? {}).filter((id) => systemStats.nodes[id]).join();
+  if (state.detail) $('btnMove').hidden = !hasGlobal('servers.create') || !moveTargets(state.detail).length;
   if (first || now !== before) return renderSidebar();
   for (const box of document.querySelectorAll('#serverList .node-res')) fillSystemStats(box, box.dataset.node === 'local' ? systemStats.local : systemStats.nodes?.[box.dataset.node]);
 }
@@ -1045,6 +1052,8 @@ function renderHeader() {
   $('btnStop').disabled = ['stopped', 'crashed', 'stopping', 'installing'].includes(d.status);
   $('btnRestart').disabled = busy;
   $('btnCountdown').hidden = !d.canCommand;
+  // Moving needs somewhere to move to: another system that can take it (see moveTargets).
+  $('btnMove').hidden = !hasGlobal('servers.create') || !moveTargets(d).length;
   $('btnCountdown').disabled = busy || !running || !!d.countdown;
   renderCountdown();
 }
@@ -2551,6 +2560,98 @@ $('cloneForm').addEventListener('submit', async (e) => {
   } catch (err) {
     $('cloneError').textContent = err.message;
   }
+});
+
+// Move this server to another system (this one or a node): everything goes, and the old copy is removed afterwards.
+
+/** Systems this server could move to: this one and every node that reports its CPU/RAM (so it's online and new enough). */
+function moveTargets(d) {
+  const here = d.node?.id ?? 'local';
+  const list = [];
+  if (here !== 'local' && systemStats?.local) list.push({ id: 'local', name: 'This System', st: systemStats.local });
+  for (const [id, st] of Object.entries(systemStats?.nodes ?? {})) if (st && id !== here) list.push({ id, name: st.name, st });
+  return list;
+}
+
+let moveWatch = null;
+$('btnMove').addEventListener('click', () => {
+  const d = state.detail;
+  $('moveSource').textContent = `"${d.name}"`;
+  const select = $('moveTarget');
+  select.innerHTML = '';
+  for (const t of moveTargets(d)) {
+    const free = t.st.mem.total - t.st.mem.used - (t.st.mem.zfsCache ?? 0);
+    select.appendChild(new Option(`${t.name} (${fmtMem(Math.max(0, free))} RAM free of ${fmtMem(t.st.mem.total)})`, t.id));
+  }
+  $('moveKeepOld').checked = false;
+  $('moveSetup').hidden = false;
+  $('moveProgress').hidden = true;
+  $('moveNotes').innerHTML = '';
+  $('moveError').textContent = '';
+  $('moveSubmit').hidden = false;
+  $('moveSubmit').disabled = false;
+  $('moveSubmit').textContent = 'Move server';
+  $('moveClose').textContent = 'Cancel';
+  $('moveDialog').showModal();
+});
+
+function showMove(m) {
+  $('moveBarBox').classList.toggle('indeterminate', m.status === 'running' && m.progress == null);
+  $('moveBar').style.width = `${m.progress ?? 0}%`;
+  $('moveStep').textContent = m.step;
+  $('moveError').textContent = m.error ?? '';
+  $('moveNotes').innerHTML = '';
+  for (const n of m.notes) $('moveNotes').appendChild(el('li', null, n));
+  if (m.status === 'running') return;
+  clearInterval(moveWatch);
+  moveWatch = null;
+  $('moveClose').textContent = 'Close';
+  // Done: offer to open the server in its new place.
+  if (m.status === 'done' && m.newServerId) {
+    $('moveSubmit').hidden = false;
+    $('moveSubmit').disabled = false;
+    $('moveSubmit').textContent = 'Open it';
+    $('moveSubmit').dataset.open = m.newServerId;
+  }
+}
+
+$('moveForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const open = $('moveSubmit').dataset.open;
+  if (open) {
+    delete $('moveSubmit').dataset.open;
+    $('moveDialog').close();
+    if (state.servers.has(open)) selectServer(open);
+    return;
+  }
+  $('moveSubmit').disabled = true;
+  $('moveError').textContent = '';
+  try {
+    const m = await api('POST', '/api/moves', { serverId: state.selected, to: $('moveTarget').value, keepOld: $('moveKeepOld').checked });
+    $('moveSetup').hidden = true;
+    $('moveProgress').hidden = false;
+    $('moveSubmit').hidden = true;
+    $('moveClose').textContent = 'Hide';
+    showMove(m);
+    moveWatch = setInterval(async () => {
+      try {
+        showMove(await api('GET', `/api/moves/${m.id}`));
+      } catch (err) {
+        clearInterval(moveWatch);
+        $('moveError').textContent = err.message;
+      }
+    }, 1500);
+  } catch (err) {
+    $('moveError').textContent = err.message;
+    $('moveSubmit').disabled = false;
+  }
+});
+// Hiding the dialog doesn't stop the move; it carries on in Server Forge.
+$('moveClose').addEventListener('click', () => $('moveDialog').close());
+$('moveDialog').addEventListener('close', () => {
+  if (moveWatch) toast('The move carries on in the background; the server shows in its new place when it\'s done.');
+  clearInterval(moveWatch);
+  moveWatch = null;
 });
 
 // Delete: remove from the panel, optionally sending the folder and/or backups to the Recycle Bin (Trash on Linux).
@@ -4514,7 +4615,7 @@ $('btnHelp').addEventListener('click', () => {
   const v = state.appUpdate?.current ?? $('appVersion').firstChild?.textContent?.replace(/^v/, '') ?? '';
   $('aboutVersion').textContent = v ? `v${v}` : '';
   // The bug report form fills in the version by itself.
-  $('aboutReport').href = `https://github.com/Volatile111/server-forge/issues/new?template=bug_report.yml&version=${encodeURIComponent(v)}`;
+  $('aboutReport').href = `https://github.com/CorruptedVariant/server-forge/issues/new?template=bug_report.yml&version=${encodeURIComponent(v)}`;
   $('aboutDialog').showModal();
 });
 $('aboutClose').addEventListener('click', () => $('aboutDialog').close());
@@ -5090,6 +5191,10 @@ const API_DOCS = [
     ['PUT', '/api/servers/{id}', 'Change automatic backups only: {"backupSchedule":{"everyHours","keep"}}', 'Make backups'],
     ['PUT', '/api/servers/{id}', 'Automatic game updates on/off only: {"autoUpdate":true} (Bedrock, Valheim)', 'Update server software'],
     ['POST', '/api/servers/{id}/clone', 'Copy a server (in the background): {"name","installDir"}', 'Create & import servers + View & download files'],
+    ['POST', '/api/moves', 'Move a server to another system (this one or a node), in the background: {"serverId","to":"local" or a node id,"keepOld"?}. Answers the move; GET /api/moves/{id} follows it', 'Create & import servers + Remove the server + View & download files'],
+    ['GET', '/api/servers/{id}/transfer-info', 'What moving this server would send (used by the main panel): its settings, scheduled tasks and the size of each part', 'Remove the server + View & download files'],
+    ['GET', '/api/servers/{id}/transfer-part', 'One part as a tar stream: ?part=server|world|backups (the server must be stopped)', 'Remove the server + View & download files'],
+    ['POST', '/api/transfer/begin', 'Receive a moved server: {"record","platform","parts","tasks"}. Answers {"token","installDir","id"}; then POST /api/transfer/{token}/part?name=… (tar body) per part, POST /api/transfer/{token}/finish, or DELETE /api/transfer/{token} to cancel', 'Create & import servers'],
     ['POST', '/api/servers/{id}/update', 'Download/update the server software', 'Update server software'],
     ['GET', '/api/servers/{id}/game-update?check=1', 'Game update status (Bedrock, Valheim): {current, latest, available, updating, auto…}; check=1 looks it up now', 'See the server'],
     ['POST', '/api/servers/{id}/game-update', 'Install the latest game version: {"countdownMinutes":5,"force":false} (progress in the console; 409 if already up to date unless force). /bedrock-update still works', 'Update server software (+ Stop when running)'],

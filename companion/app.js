@@ -746,7 +746,7 @@ setInterval(() => checkAppUpdate(), 6 * 3600_000);
 $('updateNotes').addEventListener('click', (e) => {
   e.preventDefault();
   if (appUpdate?.notes) alert(`What's new in ${appUpdate.latest}:\n\n${appUpdate.notes}`);
-  else window.open(appUpdate?.url ?? 'https://github.com/Volatile111/sf-mod-manager-releases/releases');
+  else window.open(appUpdate?.url ?? 'https://github.com/CorruptedVariant/sf-mod-manager-releases/releases');
 });
 
 // The banner's "Update now" and Settings' "Install" do the same thing; both show the download progress.
@@ -789,7 +789,7 @@ $('btnAbout').addEventListener('click', (e) => {
   const v = st?.version ?? '';
   $('aboutVersion').textContent = v ? `v${v}` : '';
   // The bug report form fills in which app and version by itself.
-  $('aboutReport').href = `https://github.com/Volatile111/server-forge/issues/new?template=bug_report.yml&app=${encodeURIComponent('SF Mod Manager')}&version=${encodeURIComponent(v)}`;
+  $('aboutReport').href = `https://github.com/CorruptedVariant/server-forge/issues/new?template=bug_report.yml&app=${encodeURIComponent('SF Mod Manager')}&version=${encodeURIComponent(v)}`;
   $('aboutDialog').showModal();
 });
 $('aboutClose').addEventListener('click', () => $('aboutDialog').close());

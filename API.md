@@ -1,6 +1,6 @@
 # Tavern Host HTTP API
 
-Reference for Tavern Host 0.11.0. This file is generated from the list in `public/app.js` (the same one the panel shows in Settings → API reference) by `node tools/make-api-docs.mjs`.
+Reference for Tavern Host 0.12.0. This file is generated from the list in `public/app.js` (the same one the panel shows in Settings → API reference) by `node tools/make-api-docs.mjs`.
 
 > Tavern Host is in beta and updates are frequent. Routes can change between versions; check this file for the version you run.
 
@@ -83,6 +83,10 @@ curl -X POST -H "Authorization: Bearer th_…" -H "Content-Type: application/jso
 | `PUT /api/servers/{id}` | Change automatic backups only: {"backupSchedule":{"everyHours","keep"}} | Make backups |
 | `PUT /api/servers/{id}` | Automatic game updates on/off only: {"autoUpdate":true} (Bedrock, Valheim) | Update server software |
 | `POST /api/servers/{id}/clone` | Copy a server (in the background): {"name","installDir"} | Create & import servers + View & download files |
+| `POST /api/moves` | Move a server to another system (this one or a node), in the background: {"serverId","to":"local" or a node id,"keepOld"?}. Answers the move; GET /api/moves/{id} follows it | Create & import servers + Remove the server + View & download files |
+| `GET /api/servers/{id}/transfer-info` | What moving this server would send (used by the main panel): its settings, scheduled tasks and the size of each part | Remove the server + View & download files |
+| `GET /api/servers/{id}/transfer-part` | One part as a tar stream: ?part=server\|world\|backups (the server must be stopped) | Remove the server + View & download files |
+| `POST /api/transfer/begin` | Receive a moved server: {"record","platform","parts","tasks"}. Answers {"token","installDir","id"}; then POST /api/transfer/{token}/part?name=… (tar body) per part, POST /api/transfer/{token}/finish, or DELETE /api/transfer/{token} to cancel | Create & import servers |
 | `POST /api/servers/{id}/update` | Download/update the server software | Update server software |
 | `GET /api/servers/{id}/game-update?check=1` | Game update status (Bedrock, Valheim): {current, latest, available, updating, auto…}; check=1 looks it up now | See the server |
 | `POST /api/servers/{id}/game-update` | Install the latest game version: {"countdownMinutes":5,"force":false} (progress in the console; 409 if already up to date unless force). /bedrock-update still works | Update server software (+ Stop when running) |

@@ -6,8 +6,9 @@
 // (main.ts checks this panel's permissions first), and one live-updates stream per node is re-broadcast here with the
 // ids rewritten, so the page treats remote servers like local ones.
 import https from 'node:https';
+import net from 'node:net';
+import tls, { type TLSSocket } from 'node:tls';
 import type { IncomingMessage } from 'node:http';
-import type { TLSSocket } from 'node:tls';
 import { randomBytes } from 'node:crypto';
 import { readJson, writeJson } from './store.ts';
 import { events } from './events.ts';
@@ -72,13 +73,41 @@ export function listNodes() {
 
 // ---------- talking to a node ----------
 
-/** One HTTPS request to a node, with the certificate checked against the pinned fingerprint. */
-export function nodeRequest(
+/**
+ * A TLS connection to host:port whose certificate matches `fingerprint` (SHA-256, hex, any case, colons allowed).
+ * The certificate is checked as soon as the handshake ends, before anything (such as the node key) is sent, so a
+ * system pretending to be the node never sees the key. Self-signed certificates are fine: the fingerprint is the check.
+ */
+export function pinnedConnect(host: string, port: number, fingerprint: string, mismatch: string): Promise<TLSSocket> {
+  const want = fingerprint.replace(/:/g, '').toUpperCase();
+  return new Promise((resolve, reject) => {
+    const socket = tls.connect({ host, port, rejectUnauthorized: false, ...(net.isIP(host) ? {} : { servername: host }) });
+    const timer = setTimeout(() => socket.destroy(Object.assign(new Error('timed out'), { code: 'ETIMEDOUT' })), 30_000);
+    socket.once('secureConnect', () => {
+      clearTimeout(timer);
+      const fp = String(socket.getPeerCertificate()?.fingerprint256 ?? '').replace(/:/g, '').toUpperCase();
+      if (!fp || fp !== want) {
+        socket.destroy();
+        reject(new Error(mismatch));
+        return;
+      }
+      resolve(socket);
+    });
+    socket.once('error', (err) => {
+      clearTimeout(timer);
+      reject(Object.assign(new Error(`Can't reach the node (${(err as NodeJS.ErrnoException).code ?? err.message}).`), { connect: true }));
+    });
+  });
+}
+
+/** One HTTPS request to a node, over a connection whose certificate was checked against the pinned fingerprint first. */
+export async function nodeRequest(
   node: Pick<NodeRecord, 'host' | 'port' | 'key' | 'fingerprint'>,
   method: string,
   path: string,
   opts: { headers?: Record<string, string>; body?: Buffer | NodeJS.ReadableStream | null; timeoutMs?: number } = {},
 ): Promise<IncomingMessage> {
+  const socket = await pinnedConnect(node.host, node.port, node.fingerprint, "The node's security certificate has changed. Remove the node and add it again with a fresh code.");
   return new Promise((resolve, reject) => {
     const req = https.request(
       {
@@ -87,25 +116,20 @@ export function nodeRequest(
         method,
         path,
         headers: { Authorization: `Bearer ${node.key}`, ...opts.headers },
-        rejectUnauthorized: false, // self-signed: we compare the fingerprint instead
-        agent: false, // a resumed TLS session doesn't carry the certificate to check
+        // The already-checked connection above (no agent: it's used for this one request only).
+        createConnection: () => socket,
         timeout: opts.timeoutMs ?? 30_000,
       },
-      (res) => {
-        const cert = (res.socket as TLSSocket).getPeerCertificate();
-        const fp = String(cert?.fingerprint256 ?? '').replace(/:/g, '').toUpperCase();
-        if (fp !== node.fingerprint.toUpperCase()) {
-          res.destroy();
-          reject(new Error("The node's security certificate has changed. Remove the node and add it again with a fresh code."));
-          return;
-        }
-        resolve(res);
-      },
+      resolve,
     );
     req.on('timeout', () => req.destroy(new Error('The node did not answer in time.')));
     req.on('error', (err) => reject(new Error(`Can't reach the node (${(err as NodeJS.ErrnoException).code ?? err.message}).`)));
     const body = opts.body;
-    if (body && typeof (body as NodeJS.ReadableStream).pipe === 'function') (body as NodeJS.ReadableStream).pipe(req);
+    if (body && typeof (body as NodeJS.ReadableStream).pipe === 'function') {
+      // A body that fails part-way (e.g. a server move whose other side stopped) ends the request instead of leaving it open.
+      (body as NodeJS.ReadableStream).on('error', (err) => req.destroy(err));
+      (body as NodeJS.ReadableStream).pipe(req);
+    }
     else req.end(body as Buffer | undefined);
   });
 }

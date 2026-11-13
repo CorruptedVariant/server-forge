@@ -1,7 +1,7 @@
 import http from 'node:http';
 import { currentDownloads, withDownloads } from './platform/mod-downloads.ts';
 import { exampleFolder, isContainer } from './platform/host.ts';
-import { readFileSync, existsSync, writeFileSync, createWriteStream, createReadStream, statSync, mkdirSync, rmSync, openSync, readSync, writeSync, closeSync } from 'node:fs';
+import { readFileSync, existsSync, writeFileSync, createWriteStream, createReadStream, statSync, mkdirSync, rmSync, openSync, readSync, writeSync, closeSync, chmodSync } from 'node:fs';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
 import os from 'node:os';
@@ -52,6 +52,8 @@ import {
 import { logActivity, readActivity } from './audit.ts';
 import { readChat, recordChat } from './chat.ts';
 import { cloneServer } from './clone.ts';
+import { transferInfo, packPart, beginReceive, receivePart, finishReceive, abortReceive, type TransferPart } from './transfer.ts';
+import { startMove, getMove } from './moves.ts';
 import { listNodes, addNode, removeNode, renameNode, getNode, nodeJson, nodeRequest, remoteServers, remoteId, parseRemoteId, isRemoteId, startNodes } from './nodes.ts';
 import { checkUpdates, updateInfo, updateGame, startUpdateChecks, updatesSupported, updateKey } from './game-updates.ts';
 import { checkAppUpdate, appUpdateInfo, startAppUpdateChecks } from './app-updates.ts';
@@ -216,7 +218,7 @@ events.on('remote-server', (snap: { id: string; settings: Record<string, unknown
   for (const [res, p] of streams) if (can(p, 'view', snap.id)) res.write(`event: server\ndata: ${JSON.stringify(visibleSnapshot(snap, p))}\n\n`);
 });
 events.on('remote-removed', (id: string) => {
-  for (const res of streams.keys()) res.write(`event: removed\ndata: ${JSON.stringify({ id })}\n\n`);
+  for (const [res, p] of streams) if (can(p, 'view', id)) res.write(`event: removed\ndata: ${JSON.stringify({ id })}\n\n`);
 });
 events.on('remote-line', (id: string, line: string) => {
   const msg = `event: line\ndata: ${JSON.stringify({ id, line })}\n\n`;
@@ -234,7 +236,7 @@ events.on('nodes', () => {
   for (const [res, p] of streams) if (canGlobal(p, 'panel.settings')) res.write('event: nodes\ndata: {}\n\n');
 });
 events.on('removed', (id: string) => {
-  for (const res of streams.keys()) res.write(`event: removed\ndata: ${JSON.stringify({ id })}\n\n`);
+  for (const [res, p] of streams) if (can(p, 'view', id)) res.write(`event: removed\ndata: ${JSON.stringify({ id })}\n\n`);
 });
 
 // ---------- routes ----------
@@ -291,13 +293,19 @@ async function panelIdentity(): Promise<{ role: PanelRole; name: string }> {
 }
 
 route('GET', '/api/me', async ({ user, principal, remote }) => ({
-  version: PANEL_VERSION,
+  // Before logging in, only what the login page needs: the version, system type and folders (which include the
+  // Windows user name) are for signed-in accounts and keys.
+  ...(principal
+    ? {
+        version: PANEL_VERSION,
+        updatedFrom,
+        platform: process.platform,
+        serverRoot: exampleFolder(...(isDev ? ['Dev'] : [])),
+      }
+    : {}),
   panel: await panelIdentity(),
-  updatedFrom,
   // "development" = running from the sources (test panel); "release" = an installed or portable build.
   build: isDev ? 'development' : 'release',
-  platform: process.platform,
-  serverRoot: exampleFolder(...(isDev ? ['Dev'] : [])),
   user: user ? auth.toPublic(user) : null,
   apiKey: principal?.kind === 'apikey' ? principal.name : undefined,
   // What this account may do outside single servers (the UI hides what it can't use).
@@ -326,13 +334,15 @@ route('POST', '/api/login', async (ctx) => {
   const ip = ctx.req.socket.remoteAddress ?? '';
   if (!auth.loginAllowed(ip)) throw new HttpError(429, 'Too many failed logins. Try again in 15 minutes.');
   const { username, password } = await readBody(ctx.req);
-  const user = auth.verifyLogin(String(username ?? ''), String(password ?? ''));
+  const name = String(username ?? '').slice(0, 64);
+  if (!auth.loginAllowed(ip, name, ctx.remote)) throw new HttpError(429, 'Too many failed logins. Try again in 15 minutes.');
+  const user = auth.verifyLogin(name, String(password ?? ''));
   if (!user) {
-    auth.recordLoginFailure(ip);
+    auth.recordLoginFailure(ip, name, ctx.remote);
     throw new HttpError(401, 'Wrong username or password.');
   }
   if (ctx.remote && !user.remote) throw new HttpError(403, 'This account is not allowed to log in remotely.');
-  auth.clearLoginFailures(ip);
+  auth.clearLoginFailures(ip, name);
   auth.recordLoginIp(user.id, ip.replace(/^::ffff:/, ''));
   logActivity({ at: Date.now(), who: user.username, kind: 'user', id: user.id, what: `logged in${ctx.remote ? ' remotely' : ''}`, ip: ip.replace(/^::ffff:/, '') });
   ctx.res.setHeader('Set-Cookie', sessionCookie(ctx, auth.createSession(user.id), 7 * 86400));
@@ -342,7 +352,8 @@ route('POST', '/api/login', async (ctx) => {
 // The desktop app logs in as the owner with a key the panel writes to its data folder at startup.
 // Only programs on this system that can read that folder can use it, and only over the local listener.
 const desktopKey = randomBytes(32).toString('hex');
-writeFileSync(dataPath('desktop.key'), desktopKey);
+writeFileSync(dataPath('desktop.key'), desktopKey, { mode: 0o600 });
+if (process.platform !== 'win32') chmodSync(dataPath('desktop.key'), 0o600);
 
 route('POST', '/api/desktop-login', async (ctx) => {
   if (ctx.remote || !LOOPBACK.includes(ctx.req.socket.remoteAddress ?? '')) throw new HttpError(403, 'Desktop login only works on this system.');
@@ -485,6 +496,104 @@ route('POST', '/api/servers/:id/clone', async (ctx) => {
   const job = cloneServer(ctx.params[0], { name: String(name ?? ''), installDir: String(installDir ?? '') });
   audit(p, `made a copy of "${getInstance(ctx.params[0]).record.name}" as "${name}" in ${installDir}`);
   return { job };
+});
+
+// ---------- moving a server to another system ----------
+// The main panel moves a server with these (moves.ts): on the system it leaves, what there is to move and each part as
+// a tar stream; on the system it goes to, begin → one upload per part → finish. Moving it away needs the permissions
+// to remove it and read its files there; receiving it needs "create servers".
+
+route('GET', '/api/servers/:id/transfer-info', async (ctx) => {
+  needServer(ctx, 'server.delete', ctx.params[0]);
+  needServer(ctx, 'files.view', ctx.params[0]);
+  return transferInfo(ctx.params[0]);
+});
+
+route('GET', '/api/servers/:id/transfer-part', async (ctx) => {
+  const p = needServer(ctx, 'server.delete', ctx.params[0]);
+  needServer(ctx, 'files.view', ctx.params[0]);
+  const part = new URL(ctx.req.url ?? '', 'http://x').searchParams.get('part') as TransferPart;
+  let stream: ReturnType<typeof packPart>;
+  try {
+    stream = packPart(ctx.params[0], part);
+  } catch (err) {
+    throw new HttpError(409, (err as Error).message);
+  }
+  ctx.res.writeHead(200, { 'Content-Type': 'application/x-tar', 'Cache-Control': 'no-store' });
+  await new Promise<void>((resolve) => {
+    stream.on('error', () => (ctx.res.destroy(), resolve()));
+    stream.on('end', resolve);
+    stream.pipe(ctx.res);
+  });
+  audit(p, `sent the ${part} files of "${getInstance(ctx.params[0]).record.name}" to another system`);
+  return undefined;
+});
+
+route('POST', '/api/transfer/begin', async (ctx) => {
+  needGlobal(ctx, 'servers.create');
+  try {
+    return beginReceive(await readBody(ctx.req));
+  } catch (err) {
+    throw new HttpError(400, (err as Error).message);
+  }
+});
+
+route('POST', '/api/transfer/:token/part', async (ctx) => {
+  needGlobal(ctx, 'servers.create');
+  const part = new URL(ctx.req.url ?? '', 'http://x').searchParams.get('name') as TransferPart;
+  try {
+    await receivePart(ctx.params[0], part, ctx.req);
+  } catch (err) {
+    throw new HttpError(400, (err as Error).message);
+  }
+  return {};
+});
+
+route('POST', '/api/transfer/:token/finish', async (ctx) => {
+  const p = needGlobal(ctx, 'servers.create');
+  try {
+    const r = await finishReceive(ctx.params[0]);
+    audit(p, `received server "${r.server.name}" from another system into ${r.server.installDir}`);
+    return r;
+  } catch (err) {
+    throw new HttpError(400, (err as Error).message);
+  }
+});
+
+route('DELETE', '/api/transfer/:token', async (ctx) => {
+  needGlobal(ctx, 'servers.create');
+  abortReceive(ctx.params[0]);
+  return {};
+});
+
+/** Who started each move (principal id), so only they can follow it. */
+const moveOwners = new Map<string, string>();
+
+// On the main panel: move a server (this system's or a node's) to another system. Body: {"serverId", "to": "local" or a
+// node id, "keepOld"?: true}. Runs in the background; GET /api/moves/:id says how it's going.
+route('POST', '/api/moves', async (ctx) => {
+  const p = needGlobal(ctx, 'servers.create');
+  const { serverId, to, keepOld } = await readBody(ctx.req);
+  const id = String(serverId ?? '');
+  // A node's server ("n~node~id") isn't an instance here, so its permissions are checked like the node proxy does.
+  if (!(['server.delete', 'files.view'] as const).every((perm) => can(p, perm, id))) throw new HttpError(403, 'Moving a server needs permission to remove it and to see its files.');
+  try {
+    const move = startMove(id, String(to ?? ''), { keepOld: !!keepOld });
+    moveOwners.set(move.id, p.id);
+    audit(p, `started moving "${move.serverName}" from ${move.from} to ${move.to}`);
+    return move;
+  } catch (err) {
+    throw new HttpError(400, (err as Error).message);
+  }
+});
+
+route('GET', '/api/moves/:id', async (ctx) => {
+  const p = need(ctx);
+  const move = getMove(ctx.params[0]);
+  // Only whoever started the move (and the owner) may follow it: it names the server and its folders.
+  if (move && !p.owner && moveOwners.get(move.id) !== p.id) throw new HttpError(404, 'That move is no longer known (Server Forge restarted).');
+  if (!move) throw new HttpError(404, 'That move is no longer known (Server Forge restarted).');
+  return move;
 });
 
 // Sidebar order (shared by everyone using this panel). Only servers you may change settings on can be moved.

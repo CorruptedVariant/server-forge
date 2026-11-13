@@ -673,10 +673,10 @@ handle('run-update', async () => {
 });
 
 // ---------- updates from GitHub releases ----------
-// New versions are published at github.com/Volatile111/sf-mod-manager-releases. Checked at start and every 6 hours;
+// New versions are published at github.com/CorruptedVariant/sf-mod-manager-releases. Checked at start and every 6 hours;
 // installing downloads the installer here (never from a page-given address) and runs it like "Update from a file".
 
-const RELEASES = 'Volatile111/sf-mod-manager-releases';
+const RELEASES = 'CorruptedVariant/sf-mod-manager-releases';
 const LINUX_KIND = LINUX && app.isPackaged ? linuxApp.installKind(process.execPath) : 'appimage';
 const LINUX_ASSET = { appimage: /^SF-Mod-Manager-(\d+\.\d+\.\d+)-x86_64\.AppImage$/, deb: /^SF-Mod-Manager-(\d+\.\d+\.\d+)-amd64\.deb$/, rpm: /^SF-Mod-Manager-(\d+\.\d+\.\d+)-x86_64\.rpm$/ };
 const INSTALLER_ASSET = LINUX ? (LINUX_ASSET[LINUX_KIND] ?? LINUX_ASSET.appimage) : /^(?:SF-Mod-Manager|Tavern-Client-Mod-Manager)-Setup-(\d+\.\d+\.\d+)\.exe$/;

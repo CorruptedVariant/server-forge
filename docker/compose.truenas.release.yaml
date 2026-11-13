@@ -1,0 +1,31 @@
+services:
+  server-forge:
+    image: server-forge:@VERSION@
+    pull_policy: never
+    init: true
+    network_mode: host
+    user: "3002:3002"
+    restart: unless-stopped
+    stop_grace_period: 2m
+    mem_limit: 8g
+    pids_limit: 4096
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    environment:
+      TZ: Etc/UTC
+      PANEL_CONTAINER: "1"
+      NODE_OPTIONS: --max-old-space-size=256
+    volumes:
+      - /mnt/CHANGE_ME/server-forge/state:/srv/server-forge
+x-portals:
+  - name: Web UI
+    scheme: https
+    host: 0.0.0.0
+    port: 8191
+    path: /
+x-notes: |
+  # Server Forge
+  Open Web UI (HTTPS 8191). The certificate is self-signed.
+  The initial sfadmin password is in the app Logs. Change it after signing in.
+  Worlds, accounts, mods and backups live in the persistent state mount.
+  To update, load the new image and change the version tag, retaining that mount.

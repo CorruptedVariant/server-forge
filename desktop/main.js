@@ -648,7 +648,7 @@ ipcMain.handle('run-installer', async () => {
 // The panel shows "update available" (the service checks GitHub); this downloads the installer and runs it. The release
 // is looked up here, never taken from the page, and only a Tavern Host installer from that release is accepted.
 
-const RELEASES = 'Volatile111/server-forge';
+const RELEASES = 'CorruptedVariant/server-forge';
 const LINUX_KIND = linuxApp ? linuxApp.installKind(process.execPath) : 'appimage';
 const LINUX_ASSET = { appimage: /^Server-Forge-(\d+\.\d+\.\d+)-x86_64\.AppImage$/, deb: /^Server-Forge-(\d+\.\d+\.\d+)-amd64\.deb$/, rpm: /^Server-Forge-(\d+\.\d+\.\d+)-x86_64\.rpm$/ };
 const INSTALLER_ASSET = LINUX ? (LINUX_ASSET[LINUX_KIND] ?? LINUX_ASSET.appimage) : /^(?:Server-Forge|Tavern-Host)-Setup-(\d+\.\d+\.\d+)\.exe$/;

@@ -1,7 +1,7 @@
 {
   "name": "tavern-host",
   "productName": "Server Forge",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "description": "Server Forge: a control panel for hosting and managing game servers.",
   "author": "CorruptedVariant",
   "private": true,
@@ -87,5 +87,5 @@
       ]
     }
   },
-  "homepage": "https://github.com/Volatile111/server-forge"
+  "homepage": "https://github.com/CorruptedVariant/server-forge"
 }

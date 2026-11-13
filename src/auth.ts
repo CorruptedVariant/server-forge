@@ -431,22 +431,45 @@ export function apiKeyPrincipal(key: string | undefined): Principal | null {
 
 // ---------- login rate limiting ----------
 
+// Failed logins are counted per address and, for logins from other devices, per account too, so one account can't be
+// guessed at from many addresses. The account limit is higher, and logins on this system itself never count towards it,
+// so someone guessing from outside can't lock the owner out of their own system.
 const attempts = new Map<string, { count: number; first: number }>();
 const WINDOW_MS = 15 * 60_000;
 const MAX_ATTEMPTS = 10;
+const MAX_ACCOUNT_ATTEMPTS = 30;
 
-export function loginAllowed(ip: string): boolean {
-  const a = attempts.get(ip);
-  if (!a || Date.now() - a.first > WINDOW_MS) return true;
-  return a.count < MAX_ATTEMPTS;
+const ipKey = (ip: string) => `ip:${ip}`;
+const userKey = (username: string) => `user:${String(username ?? '').trim().toLowerCase()}`;
+
+function failures(key: string): number {
+  const a = attempts.get(key);
+  return !a || Date.now() - a.first > WINDOW_MS ? 0 : a.count;
 }
 
-export function recordLoginFailure(ip: string): void {
-  const a = attempts.get(ip);
-  if (!a || Date.now() - a.first > WINDOW_MS) attempts.set(ip, { count: 1, first: Date.now() });
+function count(key: string) {
+  const a = attempts.get(key);
+  if (!a || Date.now() - a.first > WINDOW_MS) attempts.set(key, { count: 1, first: Date.now() });
   else a.count++;
 }
 
-export function clearLoginFailures(ip: string): void {
-  attempts.delete(ip);
+// Old entries are dropped, so the list can't grow without end.
+setInterval(() => {
+  for (const [key, a] of attempts) if (Date.now() - a.first > WINDOW_MS) attempts.delete(key);
+}, 5 * 60_000).unref();
+
+/** `remote`: the login came over Remote access (from another device). */
+export function loginAllowed(ip: string, username = '', remote = false): boolean {
+  if (failures(ipKey(ip)) >= MAX_ATTEMPTS) return false;
+  return !remote || !username || failures(userKey(username)) < MAX_ACCOUNT_ATTEMPTS;
+}
+
+export function recordLoginFailure(ip: string, username = '', remote = false): void {
+  count(ipKey(ip));
+  if (remote && username) count(userKey(username));
+}
+
+export function clearLoginFailures(ip: string, username = ''): void {
+  attempts.delete(ipKey(ip));
+  if (username) attempts.delete(userKey(username));
 }
