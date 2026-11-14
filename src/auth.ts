@@ -265,21 +265,36 @@ export function userPrincipal(user: User): Principal {
 // sha256(token) -> session. Saved to disk so restarting the panel doesn't log everyone out; only hashes are
 // stored, so the file can't be used to log in.
 
-const sessions = new Map<string, { userId: string; expires: number }>(
-  Object.entries(readJson<Record<string, { userId: string; expires: number }>>(SESSIONS_FILE, {})).filter(([, s]) => s.expires > Date.now()),
+interface Session {
+  userId: string;
+  expires: number;
+  /** When it was last used (older files don't have it; their creation time stands in). */
+  lastUsed?: number;
+}
+
+const sessions = new Map<string, Session>(
+  Object.entries(readJson<Record<string, Session>>(SESSIONS_FILE, {})).filter(([, s]) => s.expires > Date.now()),
 );
 
+let sessionsSavedAt = 0;
 function saveSessions() {
+  sessionsSavedAt = Date.now();
   writeJson(SESSIONS_FILE, Object.fromEntries(sessions));
 }
 
 const MAX_SESSIONS_PER_USER = 20;
+/** Last-used times are saved at most this often, so every request doesn't rewrite the file. */
+const LAST_USED_SAVE_MS = 5 * 60_000;
+
+const lastUsed = (s: Session) => s.lastUsed ?? s.expires - SESSION_TTL_MS;
 
 export function createSession(userId: string): string {
   const token = randomBytes(32).toString('hex');
-  sessions.set(sha256(token), { userId, expires: Date.now() + SESSION_TTL_MS });
-  // Keep each account's newest sessions only (the desktop app logs in every time it starts).
-  const mine = [...sessions].filter(([, s]) => s.userId === userId).sort((a, b) => a[1].expires - b[1].expires);
+  const now = Date.now();
+  sessions.set(sha256(token), { userId, expires: now + SESSION_TTL_MS, lastUsed: now });
+  // Past the limit, drop the account's least recently used sessions. Dropping the oldest instead let a script that
+  // logs in repeatedly push out a panel window that was still open and in use (it then got "Please log in").
+  const mine = [...sessions].filter(([, s]) => s.userId === userId).sort((a, b) => lastUsed(a[1]) - lastUsed(b[1]));
   for (const [key] of mine.slice(0, Math.max(0, mine.length - MAX_SESSIONS_PER_USER))) sessions.delete(key);
   saveSessions();
   return token;
@@ -296,6 +311,8 @@ export function sessionUser(token: string | undefined): User | null {
     }
     return null;
   }
+  session.lastUsed = Date.now();
+  if (session.lastUsed - sessionsSavedAt > LAST_USED_SAVE_MS) saveSessions();
   const user = getUser(session.userId);
   return user && !user.disabled ? user : null;
 }

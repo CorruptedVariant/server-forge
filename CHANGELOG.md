@@ -1,5 +1,13 @@
 # Changelog
 
+## Server Forge 0.12.1
+
+Fixes the panel window saying "Please log in" on the Files, Settings and Addons tabs.
+
+### Fixes
+- The panel window no longer gets signed out when something else logs in many times (for example a script or bot). Server Forge keeps 20 logins per account and used to drop the oldest, even one still in use. It now drops the ones that haven't been used for the longest time.
+- If the desktop window's login is signed out anyway, the window logs itself back in and retries, instead of showing "Please log in" on every tab.
+
 ## SF Mod Manager 0.7.1
 
 Security update for shared mod links.

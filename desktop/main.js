@@ -155,15 +155,32 @@ async function desktopLogin(session) {
     }
     await new Promise((r) => setTimeout(r, 500));
   }
-  if (!res?.ok) return; // falls back to the normal login screen
+  if (!res?.ok) return false; // falls back to the normal login screen
+  let set = false;
   for (const header of res.headers.getSetCookie()) {
     const [pair] = header.split(';');
     const [name, value] = pair.split('=');
     if (name === 'panel_session' && value) {
       await session.cookies.set({ url: PANEL_URL, name, value, httpOnly: true, sameSite: 'strict', expirationDate: Date.now() / 1000 + 7 * 86400 });
+      set = true;
     }
   }
+  return set;
 }
+
+// The page asks for this when the panel answers "Please log in" while it's open (its login was signed out, e.g.
+// pushed out by many other logins). Only the main window may ask, and at most every few seconds.
+let lastRelogin = 0;
+ipcMain.handle('relogin', async (e) => {
+  if (!win || e.sender !== win.webContents || !e.sender.getURL().startsWith(PANEL_URL)) return false;
+  if (Date.now() - lastRelogin < 5000) return false;
+  lastRelogin = Date.now();
+  try {
+    return await desktopLogin(win.webContents.session);
+  } catch {
+    return false;
+  }
+});
 
 /** Small orange dot shown on the development panel's taskbar button. */
 function devBadge() {

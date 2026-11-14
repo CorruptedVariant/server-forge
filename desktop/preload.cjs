@@ -5,6 +5,8 @@ contextBridge.exposeInMainWorld('desktop', {
   isDesktop: true,
   /** Opens the Windows folder picker; resolves to the chosen path or null. */
   pickFolder: (startPath) => ipcRenderer.invoke('pick-folder', typeof startPath === 'string' ? startPath : undefined),
+  /** Logs this window back in as the owner (after its login was signed out). Resolves true if it worked. */
+  relogin: () => ipcRenderer.invoke('relogin'),
   /** Opens a folder in File Explorer. */
   openFolder: (folder) => ipcRenderer.invoke('open-folder', String(folder)),
   /** Sets the window/taskbar icon from a PNG data URL (the colour-matched logo). */

@@ -23,12 +23,28 @@ async function api(method, url, body) {
   return apiCall(method, url, body);
 }
 
+// In the desktop app, a login that gets signed out while the window is open (e.g. pushed out by many other logins)
+// is renewed by the app and the request retried, instead of every tab saying "Please log in". Only for the owner,
+// since that's who the app logs in as; never after logging out (state.user is cleared by the reload).
+let relogin = null;
+function desktopRelogin() {
+  if (!window.desktop?.relogin || state.user?.role !== 'owner') return Promise.resolve(false);
+  relogin ??= window.desktop
+    .relogin()
+    .catch(() => false)
+    .finally(() => setTimeout(() => (relogin = null), 5000));
+  return relogin;
+}
+
 async function apiCall(method, url, body) {
-  const res = await fetch(url, {
-    method,
-    headers: { 'Content-Type': 'application/json', 'X-Panel': '1' },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
+  const send = () =>
+    fetch(url, {
+      method,
+      headers: { 'Content-Type': 'application/json', 'X-Panel': '1' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+  let res = await send();
+  if (res.status === 401 && url !== '/api/login' && (await desktopRelogin())) res = await send();
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw Object.assign(new Error(data.error || `Request failed (${res.status})`), { status: res.status });
   return data;
