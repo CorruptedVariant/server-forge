@@ -230,7 +230,7 @@ export async function checkUpdates(force = false, only?: string) {
       if (updateKey(inst) !== game) continue;
       const info = updateInfo(inst);
       events.emit('game-update', { serverId: inst.id, ...info });
-      if (info.available && inst.record.autoUpdate && !updating.has(inst.id)) {
+      if (info.available && inst.record.autoUpdate && !inst.record.archivedAt && !updating.has(inst.id)) {
         updateGame(inst.id, { countdownMinutes: 5, auto: true }).catch((err) => inst.log(`Automatic update failed: ${(err as Error).message}`));
       }
     }

@@ -1,5 +1,13 @@
 # Changelog
 
+## Server Forge 0.13.0
+
+Archive servers you no longer use, and more reliable server moves.
+
+- **Archive servers:** a server's Settings tab has a new **Archive server** button. An archived server keeps its files and backups but is hidden from the server list, in a closed "Archived" section at the bottom of each system. It can't be started (not even by scheduled tasks or crash auto-restart), and automatic game updates, addon updates and scheduled tasks skip it. Unarchive it from the banner on its page or from Settings.
+- **Move:** when you keep the old copy after moving a server, a new **Archive it** option (on by default) archives the old copy for you.
+- **Move fixes:** large server moves no longer get cut off by the request time limit, a cancelled move stops its packing straight away, and a failed move now shows the real error instead of a generic tar message.
+
 ## Server Forge 0.12.1
 
 Fixes the panel window saying "Please log in" on the Files, Settings and Addons tabs.

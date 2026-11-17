@@ -87,6 +87,9 @@ export function packPart(id: string, part: TransferPart): Readable {
   const tar = spawn(TAR, ['-cf', '-', '--exclude', LOCK_FILE, '-C', dir, '.'], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
   let errors = '';
   tar.stderr.on('data', (d) => (errors = (errors + d.toString()).slice(-2000)));
+  tar.stdout.on('close', () => {
+    if (!tar.stdout.readableEnded && tar.exitCode === null) tar.kill();
+  });
   tar.on('close', (code) => {
     // A failed pack ends the stream with an error, so the other side doesn't take a half archive for a whole one.
     if (code !== 0) tar.stdout.destroy(new Error(`Packing ${part} failed: ${errors.trim().split('\n').pop() || `tar exit code ${code}`}`));
@@ -278,7 +281,11 @@ export function receivePart(token: string, part: TransferPart, body: Readable): 
   return new Promise((resolve, reject) => {
     tar.on('error', (err) => reject(fail(err.message)));
     tar.on('close', async (code) => {
-      if (code !== 0) return reject(fail(errors.trim().split('\n').pop() || `tar exit code ${code}`));
+      if (code !== 0) {
+        // GNU tar's last line is only a summary. Keep the actual filesystem/stream error above it.
+        const detail = errors.trim().split('\n').filter((line) => !/^tar: Exiting with failure status due to previous errors\s*$/.test(line)).join('\n');
+        return reject(fail(detail || `tar exit code ${code}`));
+      }
       // GNU tar stops at the archive's end marker, before the padding after it: read the rest, then check it all came.
       body.unpipe(tar.stdin);
       body.resume();

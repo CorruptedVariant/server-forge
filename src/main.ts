@@ -1,4 +1,5 @@
 import http from 'node:http';
+import { STREAMING_HTTP_OPTIONS, trackRequestDeadline, allowStreamingBody } from './request-deadline.ts';
 import { currentDownloads, withDownloads } from './platform/mod-downloads.ts';
 import { exampleFolder, isContainer } from './platform/host.ts';
 import { readFileSync, existsSync, writeFileSync, createWriteStream, createReadStream, statSync, mkdirSync, rmSync, openSync, readSync, writeSync, closeSync, chmodSync } from 'node:fs';
@@ -478,6 +479,8 @@ route('PUT', '/api/servers/:id', async (ctx) => {
   const onlySchedule = body && Object.keys(body).every((k) => k === 'backupSchedule');
   // The auto-update switch belongs to "update server software".
   const onlyAutoUpdate = body && Object.keys(body).length && Object.keys(body).every((k) => k === 'autoUpdate');
+  // Archiving has its own route (POST /archive), with its own permission.
+  if (body && 'archived' in body) throw new HttpError(400, 'Archive with POST /api/servers/{id}/archive.');
   const p = needServer(ctx, onlySchedule ? 'backups.create' : onlyAutoUpdate ? 'server.update' : 'settings.edit', ctx.params[0]);
   const snap = await updateServer(ctx.params[0], body).snapshot();
   // Automatic updates just turned on: check now, so a version that came out before the switch installs straight away.
@@ -485,6 +488,23 @@ route('PUT', '/api/servers/:id', async (ctx) => {
     checkUpdates(true, snap.game).catch((err) => getInstance(ctx.params[0]).log(`Couldn't check for updates: ${(err as Error).message}`));
   }
   audit(p, onlySchedule ? `changed automatic backups of "${snap.name}"` : onlyAutoUpdate ? `turned automatic updates ${body.autoUpdate ? 'on' : 'off'} for "${snap.name}"` : `changed settings of "${snap.name}"`);
+  return visibleSnapshot(snap, p);
+});
+
+// Body: {"archived": true|false}. Archived servers keep their files and backups but are hidden from the server list
+// (the panel shows them under "Archived"), can't be started and get no automatic updates. Hiding a server is close to
+// removing it, so this needs "remove the server".
+route('POST', '/api/servers/:id/archive', async (ctx) => {
+  const p = needServer(ctx, 'server.delete', ctx.params[0]);
+  const { archived } = await readBody(ctx.req);
+  if (typeof archived !== 'boolean') throw new HttpError(400, 'Send {"archived": true} or {"archived": false}.');
+  let snap;
+  try {
+    snap = await updateServer(ctx.params[0], { archived }).snapshot();
+  } catch (err) {
+    throw new HttpError(409, (err as Error).message);
+  }
+  audit(p, `${archived ? 'archived' : 'unarchived'} "${snap.name}"`);
   return visibleSnapshot(snap, p);
 });
 
@@ -523,6 +543,10 @@ route('GET', '/api/servers/:id/transfer-part', async (ctx) => {
   await new Promise<void>((resolve) => {
     stream.on('error', () => (ctx.res.destroy(), resolve()));
     stream.on('end', resolve);
+    ctx.res.once('close', () => {
+      stream.destroy();
+      resolve();
+    });
     stream.pipe(ctx.res);
   });
   audit(p, `sent the ${part} files of "${getInstance(ctx.params[0]).record.name}" to another system`);
@@ -540,6 +564,7 @@ route('POST', '/api/transfer/begin', async (ctx) => {
 
 route('POST', '/api/transfer/:token/part', async (ctx) => {
   needGlobal(ctx, 'servers.create');
+  allowStreamingBody(ctx.req);
   const part = new URL(ctx.req.url ?? '', 'http://x').searchParams.get('name') as TransferPart;
   try {
     await receivePart(ctx.params[0], part, ctx.req);
@@ -573,12 +598,12 @@ const moveOwners = new Map<string, string>();
 // node id, "keepOld"?: true}. Runs in the background; GET /api/moves/:id says how it's going.
 route('POST', '/api/moves', async (ctx) => {
   const p = needGlobal(ctx, 'servers.create');
-  const { serverId, to, keepOld } = await readBody(ctx.req);
+  const { serverId, to, keepOld, archiveOld } = await readBody(ctx.req);
   const id = String(serverId ?? '');
   // A node's server ("n~node~id") isn't an instance here, so its permissions are checked like the node proxy does.
   if (!(['server.delete', 'files.view'] as const).every((perm) => can(p, perm, id))) throw new HttpError(403, 'Moving a server needs permission to remove it and to see its files.');
   try {
-    const move = startMove(id, String(to ?? ''), { keepOld: !!keepOld });
+    const move = startMove(id, String(to ?? ''), { keepOld: !!keepOld, archiveOld: !!archiveOld });
     moveOwners.set(move.id, p.id);
     audit(p, `started moving "${move.serverName}" from ${move.from} to ${move.to}`);
     return move;
@@ -637,6 +662,7 @@ for (const action of ['start', 'stop', 'restart', 'kill'] as const) {
     const inst = getInstance(ctx.params[0]);
     // Refuse right away (with the reason) if another Server Forge on this system is running this server folder.
     if (action === 'start' || action === 'restart') inst.assertNotOwnedElsewhere();
+    if ((action === 'start' || action === 'restart') && inst.record.archivedAt) throw new HttpError(409, 'This server is archived. Unarchive it first.');
     // Stop/restart can count down first: {"countdownMinutes": 5, "message"?: "... {time} ..."}. Start/restart take
     // {"force": true} to skip the world checks (answered with 428 and the reason, so the panel can ask first).
     const body = await readBody(ctx.req);
@@ -3009,6 +3035,7 @@ function permFor(method: string, sub: string): { server?: ServerPerm; also?: Ser
   ];
   if (s === '' && method === 'PUT') return { server: 'settings.edit' };
   if (s === '' && method === 'DELETE') return { server: 'server.delete' };
+  if (s === '/archive' && !get) return { server: 'server.delete' };
   if (s === '/clone') return { global: 'servers.create' };
   // These may stop or restart the server, which needs that permission too here (the node can't tell who asked, so
   // it's asked for whether or not the server is running).
@@ -3084,6 +3111,7 @@ async function proxyToNode(req: http.IncomingMessage, res: http.ServerResponse, 
 }
 
 async function handle(req: http.IncomingMessage, res: http.ServerResponse, remote: boolean) {
+  trackRequestDeadline(req, res);
   for (const [k, v] of Object.entries(SECURITY_HEADERS)) res.setHeader(k, v);
   if (remote) res.setHeader('Strict-Transport-Security', 'max-age=31536000');
   const url = new URL(req.url ?? '/', 'http://panel');
@@ -3240,7 +3268,7 @@ startAppUpdateChecks();
 async function autoUpdateAddons() {
   if (!curseforgeKey()) return;
   for (const inst of listInstances()) {
-    if (inst.record.game !== 'bedrock' || !getUpdateSettings(inst.record.installDir).auto) continue;
+    if (inst.record.game !== 'bedrock' || inst.record.archivedAt || !getUpdateSettings(inst.record.installDir).auto) continue;
     const addons = inst.module.addons!;
     try {
       const labels = await addons.checkUpdates!(inst.record);
@@ -3266,7 +3294,7 @@ async function autoUpdateAddons() {
 setTimeout(() => autoUpdateAddons().catch(() => {}), 10 * 60_000).unref();
 setInterval(() => autoUpdateAddons().catch(() => {}), 6 * 3600_000).unref();
 startNodes();
-http.createServer((req, res) => handle(req, res, false)).listen(config.port, '127.0.0.1', () => {
+http.createServer(STREAMING_HTTP_OPTIONS, (req, res) => handle(req, res, false)).listen(config.port, '127.0.0.1', () => {
   console.log(`Panel running at http://127.0.0.1:${config.port}`);
 });
 if (config.remote.enabled) {

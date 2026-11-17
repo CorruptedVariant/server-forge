@@ -460,6 +460,7 @@ class ServerInstance {
     if (this.busy) throw new Error('Another action is in progress.');
     if (runningJob(this.id)) throw new Error('Wait for the install or update to finish.');
     if (this.pid && isAlive(this.pid)) throw new Error('Server is already running.');
+    if (this.record.archivedAt) throw new Error('This server is archived. Unarchive it first.');
     this.assertNotOwnedElsewhere();
     if (!opts.force) {
       try {
@@ -795,6 +796,8 @@ class ServerInstance {
       // Another Server Forge on this system uses this folder too: this panel won't start, update or delete it.
       folderConflict: folderUsedElsewhere(this.record.installDir),
       autoRestart: this.record.autoRestart,
+      // Archived: hidden from the server list (shown under "Archived"), can't start, skipped by automatic updates.
+      archivedAt: this.record.archivedAt ?? null,
       settings: this.record.settings,
       // Installs/updates/restores make the server unusable meanwhile; a backup doesn't.
       status: ['install', 'restore'].includes(runningJob(this.id)?.kind ?? '') ? 'installing' : this.status,
@@ -1124,10 +1127,17 @@ export function createServer(input: { game: string; name: string; installDir: st
 
 export function updateServer(
   id: string,
-  input: { name?: string; installDir?: string; autoRestart?: boolean; autoUpdate?: boolean; settings?: Settings; backupSchedule?: { everyHours: number; keep: number } },
+  input: { name?: string; installDir?: string; autoRestart?: boolean; autoUpdate?: boolean; archived?: boolean; settings?: Settings; backupSchedule?: { everyHours: number; keep: number } },
 ) {
   const inst = getInstance(id);
   const record = { ...inst.record };
+  if (input.archived !== undefined) {
+    if (input.archived) {
+      if (inst.isRunning || (inst.status !== 'stopped' && inst.status !== 'crashed')) throw new Error('Stop the server before archiving it.');
+      if (runningJob(id)) throw new Error('Wait for the current job (install, backup or restore) to finish.');
+      record.archivedAt = record.archivedAt ?? Date.now();
+    } else delete record.archivedAt;
+  }
   if (input.autoUpdate !== undefined) record.autoUpdate = !!input.autoUpdate;
   if (input.name !== undefined) {
     const name = String(input.name).trim();

@@ -126,6 +126,8 @@ function checkStuckAndCrashed() {
 function checkPorts() {
   const byPort = new Map<string, string[]>();
   for (const inst of listInstances()) {
+    // An archived server never starts, so its port can't clash with anything.
+    if (inst.record.archivedAt) continue;
     const c = inst.module.connection?.(inst.record);
     if (!c?.port) continue;
     const k = `${c.protocol}:${c.port}`;

@@ -491,6 +491,19 @@ function saveCollapsed() {
     localStorage.setItem('th-collapsed-games', JSON.stringify([...collapsedGames]));
   } catch {}
 }
+// Systems whose "Archived" list is opened in the sidebar (closed by default; per browser).
+const openArchived = new Set((() => {
+  try {
+    return JSON.parse(localStorage.getItem('th-open-archived') ?? '[]');
+  } catch {
+    return [];
+  }
+})());
+function saveOpenArchived() {
+  try {
+    localStorage.setItem('th-open-archived', JSON.stringify([...openArchived]));
+  } catch {}
+}
 
 const JAVA_FLAVOR_NAMES = { paper: 'Paper', vanilla: 'Vanilla', fabric: 'Fabric', forge: 'Forge', neoforge: 'NeoForge', spigot: 'Spigot', sponge: 'SpongeVanilla', bungeecord: 'BungeeCord' };
 
@@ -610,7 +623,10 @@ function renderSidebar() {
   for (const s of state.servers.values()) {
     const nk = nodeKey(s);
     if (!byNode.has(nk)) byNode.set(nk, { name: s.node?.name ?? 'This System', servers: [] });
-    byNode.get(nk).servers.push(s);
+    // Archived servers go in their own closed-by-default list at the bottom of their system's section.
+    const info = byNode.get(nk);
+    if (s.archivedAt) (info.archived ??= []).push(s);
+    else info.servers.push(s);
   }
   // Storage (Tavern Vault): only when it's turned on in Settings, and only on systems where Tavern Vault is connected.
   // A system with storage but no servers still gets a section.
@@ -637,6 +653,7 @@ function renderSidebar() {
     }
     if (hasStorage(nk)) nav.appendChild(storageLink(nk, info.name));
     renderGameGroups(nav, info.servers, nk);
+    if (info.archived?.length) renderArchived(nav, info.archived, nk);
   }
   if (!systemStats) updateSystemStats(true);
 }
@@ -852,6 +869,25 @@ function renderGameGroups(nav, servers, nk) {
   }
 }
 
+/** A system's archived servers: one "Archived (n)" header, closed unless opened (or the selected server is in it). */
+function renderArchived(nav, servers, nk) {
+  const open = openArchived.has(nk) || servers.some((s) => s.id === state.selected);
+  const section = el('div', 'server-group archived-group');
+  const head = el('button', `group-head archived-head${open ? '' : ' collapsed'}`);
+  head.type = 'button';
+  head.append(el('span', 'chevron', '▾'), el('span', 'group-name', 'Archived'), el('span', 'group-count', `${servers.length}`));
+  head.title = open ? 'Hide archived servers' : 'Show archived servers (kept, but hidden from the list)';
+  head.addEventListener('click', () => {
+    if (openArchived.has(nk)) openArchived.delete(nk);
+    else openArchived.add(nk);
+    saveOpenArchived();
+    renderSidebar();
+  });
+  section.appendChild(head);
+  if (open) for (const s of [...servers].sort((a, b) => a.name.localeCompare(b.name))) section.appendChild(serverLink(s, null, null, true));
+  nav.appendChild(section);
+}
+
 /** Drag a section header onto another one to move that game's servers (as a block) above or below it. */
 function enableGroupDrag(head, game, groupOrder, nk) {
   head.draggable = true;
@@ -962,12 +998,12 @@ function enableDrag(a, s, game) {
 }
 
 /** `child`: shown under its BungeeCord proxy ({ proxy, name } = the proxy and its name for this server there). */
-function serverLink(s, game, child = null) {
+function serverLink(s, game, child = null, archived = false) {
   const a = el('a');
   a.href = `#${s.id}`;
-  a.className = `s-${s.status}${s.id === state.selected ? ' active' : ''}${child ? ' proxy-child' : ''}`;
-  // Servers under a proxy follow it; the order is changed by dragging the proxy.
-  if (!child && s.permissions?.includes('settings.edit')) enableDrag(a, s, game);
+  a.className = `s-${s.status}${s.id === state.selected ? ' active' : ''}${child ? ' proxy-child' : ''}${archived ? ' archived' : ''}`;
+  // Servers under a proxy follow it; the order is changed by dragging the proxy. Archived ones aren't in the order.
+  if (!child && !archived && s.permissions?.includes('settings.edit')) enableDrag(a, s, game);
   // Type icon with the status dot on its corner.
   const icon = serverIcon(s, 'srv-icon side');
   icon.appendChild(el('span', 'dot'));
@@ -985,7 +1021,7 @@ function serverLink(s, game, child = null) {
   const via = child ? ` · "${child.name}"` : linked ? ` · via ${linked.proxy.name}` : '';
   const backends = proxyChildren.get(s.id)?.length;
   const count = backends ? ` · ${backends} server${backends === 1 ? '' : 's'}` : '';
-  text.appendChild(el('div', 'sub', `${kind}${count}${via} · ${STATUS_LABEL[s.status]}${players}`));
+  text.appendChild(el('div', 'sub', archived ? `${kind} · Archived ${new Date(s.archivedAt).toLocaleDateString()}` : `${kind}${count}${via} · ${STATUS_LABEL[s.status]}${players}`));
   if (linked) a.title = `Behind BungeeCord "${linked.proxy.name}" as "${linked.name}" (${linked.address})`;
   // Mini CPU/RAM view (filled in by updateSidebarStats) for servers that are running.
   if (['running', 'starting', 'stopping'].includes(s.status)) {
@@ -1064,9 +1100,19 @@ function renderHeader() {
   $('svError').textContent = [conflict, d.lastError].filter(Boolean).join('\n');
   const busy = d.status === 'starting' || d.status === 'stopping' || d.status === 'installing';
   const running = d.status === 'running' || d.status === 'starting';
-  $('btnStart').disabled = busy || running;
+  // Archived: kept but put away. It can't start until it's unarchived.
+  const archived = !!d.archivedAt;
+  $('svArchived').hidden = !archived;
+  if (archived) $('svArchivedText').textContent = `Archived ${new Date(d.archivedAt).toLocaleString()}. It's hidden from the server list and can't be started. Its files and backups are kept.`;
+  $('btnStart').disabled = busy || running || archived;
+  $('btnStart').title = archived ? 'Archived: unarchive it to start it' : '';
   $('btnStop').disabled = ['stopped', 'crashed', 'stopping', 'installing'].includes(d.status);
-  $('btnRestart').disabled = busy;
+  $('btnRestart').disabled = busy || archived;
+  $('btnArchive').textContent = archived ? 'Unarchive server' : 'Archive server';
+  $('archiveTitle').textContent = archived ? 'Unarchive this server' : 'Archive this server';
+  $('archiveHelp').textContent = archived
+    ? 'Bring it back into the server list. It can be started again, and automatic updates and scheduled tasks pick it up again.'
+    : 'Keep it, with its files and backups, but hide it from the server list (it shows under "Archived" instead). An archived server can\'t be started and gets no automatic updates or scheduled tasks. Handy for the old copy of a server you\'ve moved. The server must be stopped.';
   $('btnCountdown').hidden = !d.canCommand;
   // Moving needs somewhere to move to: another system that can take it (see moveTargets).
   $('btnMove').hidden = !hasGlobal('servers.create') || !moveTargets(d).length;
@@ -2600,6 +2646,8 @@ $('btnMove').addEventListener('click', () => {
     select.appendChild(new Option(`${t.name} (${fmtMem(Math.max(0, free))} RAM free of ${fmtMem(t.st.mem.total)})`, t.id));
   }
   $('moveKeepOld').checked = false;
+  $('moveArchiveOld').checked = true;
+  updateMoveKeep();
   $('moveSetup').hidden = false;
   $('moveProgress').hidden = true;
   $('moveNotes').innerHTML = '';
@@ -2610,6 +2658,19 @@ $('btnMove').addEventListener('click', () => {
   $('moveClose').textContent = 'Cancel';
   $('moveDialog').showModal();
 });
+
+// "Keep the old copy" can also archive it, so it's out of the way but still there to go back to.
+function updateMoveKeep() {
+  const keep = $('moveKeepOld').checked;
+  $('moveArchiveRow').hidden = !keep;
+  $('moveKeepHelp').textContent = keep
+    ? $('moveArchiveOld').checked
+      ? 'The old copy stays where it is, stopped and archived: hidden from the server list, but kept with its files and backups. Unarchive it any time.'
+      : 'The old copy stays where it is, stopped, and still shows in the server list.'
+    : 'Otherwise the old copy is removed once the move has worked; its files go to the Recycle Bin (Trash on Linux) on that system.';
+}
+$('moveKeepOld').addEventListener('change', updateMoveKeep);
+$('moveArchiveOld').addEventListener('change', updateMoveKeep);
 
 function showMove(m) {
   $('moveBarBox').classList.toggle('indeterminate', m.status === 'running' && m.progress == null);
@@ -2643,7 +2704,7 @@ $('moveForm').addEventListener('submit', async (e) => {
   $('moveSubmit').disabled = true;
   $('moveError').textContent = '';
   try {
-    const m = await api('POST', '/api/moves', { serverId: state.selected, to: $('moveTarget').value, keepOld: $('moveKeepOld').checked });
+    const m = await api('POST', '/api/moves', { serverId: state.selected, to: $('moveTarget').value, keepOld: $('moveKeepOld').checked, archiveOld: $('moveKeepOld').checked && $('moveArchiveOld').checked });
     $('moveSetup').hidden = true;
     $('moveProgress').hidden = false;
     $('moveSubmit').hidden = true;
@@ -2669,6 +2730,25 @@ $('moveDialog').addEventListener('close', () => {
   clearInterval(moveWatch);
   moveWatch = null;
 });
+
+// Archive: keep the server (files, backups, settings) but hide it from the list; unarchive brings it back.
+async function setArchived(archived) {
+  const d = state.detail;
+  if (archived && !['stopped', 'crashed'].includes(d.status)) return toast('Stop the server before archiving it.', true);
+  if (archived && !(await confirmBox(`Archive "${d.name}"?\n\nIt stays on ${d.node?.name ?? 'this system'} with its files and backups, but it's hidden from the server list (under "Archived"), can't be started, and gets no automatic updates or scheduled tasks until you unarchive it.`))) return;
+  try {
+    const snap = await api('POST', `/api/servers/${d.id}/archive`, { archived });
+    state.servers.set(d.id, { ...state.servers.get(d.id), ...snap });
+    state.detail = { ...state.detail, archivedAt: snap.archivedAt };
+    renderHeader();
+    renderSidebar();
+    toast(archived ? `"${d.name}" archived. Find it under "Archived" in the list.` : `"${d.name}" unarchived.`);
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
+$('btnArchive').addEventListener('click', () => setArchived(!state.detail.archivedAt));
+$('btnUnarchiveBanner').addEventListener('click', () => setArchived(false));
 
 // Delete: remove from the panel, optionally sending the folder and/or backups to the Recycle Bin (Trash on Linux).
 function updateDeleteDialog() {
@@ -5206,8 +5286,9 @@ const API_DOCS = [
     ['PUT', '/api/servers/{id}', 'Change settings: {"name","installDir","autoRestart","settings"}', 'Change settings'],
     ['PUT', '/api/servers/{id}', 'Change automatic backups only: {"backupSchedule":{"everyHours","keep"}}', 'Make backups'],
     ['PUT', '/api/servers/{id}', 'Automatic game updates on/off only: {"autoUpdate":true} (Bedrock, Valheim)', 'Update server software'],
+    ['POST', '/api/servers/{id}/archive', 'Archive (hide from the list, kept with its files; can\'t start) or unarchive: {"archived":true|false}. Archiving needs it stopped', 'Remove the server'],
     ['POST', '/api/servers/{id}/clone', 'Copy a server (in the background): {"name","installDir"}', 'Create & import servers + View & download files'],
-    ['POST', '/api/moves', 'Move a server to another system (this one or a node), in the background: {"serverId","to":"local" or a node id,"keepOld"?}. Answers the move; GET /api/moves/{id} follows it', 'Create & import servers + Remove the server + View & download files'],
+    ['POST', '/api/moves', 'Move a server to another system (this one or a node), in the background: {"serverId","to":"local" or a node id,"keepOld"?,"archiveOld"? (with keepOld: archive the old copy)}. Answers the move; GET /api/moves/{id} follows it', 'Create & import servers + Remove the server + View & download files'],
     ['GET', '/api/servers/{id}/transfer-info', 'What moving this server would send (used by the main panel): its settings, scheduled tasks and the size of each part', 'Remove the server + View & download files'],
     ['GET', '/api/servers/{id}/transfer-part', 'One part as a tar stream: ?part=server|world|backups (the server must be stopped)', 'Remove the server + View & download files'],
     ['POST', '/api/transfer/begin', 'Receive a moved server: {"record","platform","parts","tasks"}. Answers {"token","installDir","id"}; then POST /api/transfer/{token}/part?name=… (tar body) per part, POST /api/transfer/{token}/finish, or DELETE /api/transfer/{token} to cancel', 'Create & import servers'],

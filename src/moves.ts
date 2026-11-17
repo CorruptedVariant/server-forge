@@ -2,9 +2,9 @@
 // system it's on to the system it goes to (through this panel, so the two never need to reach each other), has the new
 // system add it, and then removes the old copy (its files go to the Recycle Bin / Trash there). Either side may be this
 // system or a node. The per-system half is transfer.ts.
-import { PassThrough, type Readable } from 'node:stream';
+import { Transform, type Readable } from 'node:stream';
 import { randomBytes } from 'node:crypto';
-import { deleteServer, getInstance } from './instances.ts';
+import { deleteServer, getInstance, updateServer } from './instances.ts';
 import { deleteTasksFor } from './scheduler.ts';
 import { getNode, listNodes, nodeJson, nodeRequest, parseRemoteId, remoteId, type NodeRecord } from './nodes.ts';
 import { abortReceive, beginReceive, finishReceive, packPart, receivePart, transferInfo, type TransferInfo, type TransferPart } from './transfer.ts';
@@ -38,6 +38,8 @@ interface Source {
   stop(): Promise<void>;
   open(part: TransferPart): Promise<Readable>;
   remove(): Promise<void>;
+  /** Hides the old copy from the server list (kept, stopped). false: that system's Server Forge is too old to archive. */
+  archive(): Promise<boolean>;
 }
 
 interface Target {
@@ -82,6 +84,7 @@ function localSource(id: string): Source {
       await deleteServer(id, { files: true, backups: true });
       deleteTasksFor(id);
     },
+    archive: async () => !!updateServer(id, { archived: true }).record.archivedAt,
   };
 }
 
@@ -100,6 +103,15 @@ function nodeSource(nodeId: string, id: string): Source {
       return res;
     },
     remove: async () => void (await call('DELETE', `${base}?files=1&backups=1`, undefined, 5 * 60_000)),
+    archive: async () => {
+      try {
+        return !!(await call<{ archivedAt?: number | null }>('POST', `${base}/archive`, { archived: true })).archivedAt;
+      } catch (err) {
+        // A Server Forge from before archiving has no archive route.
+        if (/too old/.test((err as Error).message)) return false;
+        throw err;
+      }
+    },
   };
 }
 
@@ -138,7 +150,7 @@ export function systemOf(serverId: string): string {
   return parseRemoteId(serverId)?.nodeId ?? 'local';
 }
 
-export function startMove(serverId: string, to: string, opts: { keepOld: boolean }): MoveInfo {
+export function startMove(serverId: string, to: string, opts: { keepOld: boolean; archiveOld?: boolean }): MoveInfo {
   const remote = parseRemoteId(serverId);
   if (moving.has(serverId)) throw new Error('That server is already being moved.');
   if ((remote?.nodeId ?? 'local') === to) throw new Error("It's already on that system.");
@@ -178,14 +190,25 @@ export function startMove(serverId: string, to: string, opts: { keepOld: boolean
         const label = part.name === 'server' ? 'server files' : part.name === 'world' ? 'world' : 'backups';
         step(`Moving the ${label}… ${gb(done)} of ${gb(total)}`, Math.round((done / total) * 100));
         const from = await source.open(part.name);
-        const counter = new PassThrough();
-        from.on('error', (err) => counter.destroy(err));
-        counter.on('data', (c: Buffer) => {
-          done += c.length;
-          step(`Moving the ${label}… ${gb(done)} of ${gb(total)}`, Math.min(99, Math.round((done / total) * 100)));
+        // A data listener would start flowing before the target's TLS connection is ready,
+        // discarding the archive header. Count inside a transform so backpressure is preserved.
+        const counter = new Transform({
+          transform(c: Buffer, _encoding, callback) {
+            done += c.length;
+            step(`Moving the ${label}… ${gb(done)} of ${gb(total)}`, Math.min(99, Math.round((done / total) * 100)));
+            callback(null, c);
+          },
         });
-        from.pipe(counter);
-        await target.part(token, part.name, counter);
+        from.on('error', (err) => counter.destroy(err));
+        // The source can fail while the destination is still connecting.
+        counter.on('error', () => {});
+        try {
+          from.pipe(counter);
+          await target.part(token, part.name, counter);
+        } finally {
+          from.destroy();
+          counter.destroy();
+        }
       }
       step(`Adding it on ${target.name}…`, 99);
       const result = await target.finish(token);
@@ -200,6 +223,13 @@ export function startMove(serverId: string, to: string, opts: { keepOld: boolean
           move.notes.push(`The old copy was removed from ${source.name} (its files went to the Recycle Bin / Trash there).`);
         } catch (err) {
           move.notes.push(`The old copy couldn't be removed from ${source.name} (${(err as Error).message}). It's stopped; remove it yourself when you're happy with the move.`);
+        }
+      } else if (opts.archiveOld) {
+        try {
+          if (await source.archive()) move.notes.push(`The old copy is still on ${source.name}, stopped and archived: it's hidden from the server list (open "Archived" under ${source.name} to see it).`);
+          else move.notes.push(`The old copy is still on ${source.name}, stopped. Server Forge there is too old to archive it; update it, then archive it from the server's Settings tab.`);
+        } catch (err) {
+          move.notes.push(`The old copy is still on ${source.name}, stopped, but couldn't be archived (${(err as Error).message}). Archive it from its Settings tab.`);
         }
       } else move.notes.push(`The old copy is still on ${source.name}, stopped.`);
       Object.assign(move, { status: 'done', step: 'Moved.', progress: 100 });

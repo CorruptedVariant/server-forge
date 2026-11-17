@@ -903,3 +903,11 @@ dialog.wide-dialog { width: min(720px, calc(100vw - 32px)); }
 .download-note { font-size: 12px; opacity: .75; }
 .download-row.failed .download-note { color: #fca5a5; opacity: 1; }
 .download-row.done .download-note { color: #4ade80; opacity: 1; }
+
+/* Archived servers: their own closed-by-default list per system, a banner on the server, the "archive the old copy" option. */
+#serverList .archived-group { margin-top: 6px; border-top: 1px dashed var(--border); padding-top: 4px; }
+#serverList a.archived { opacity: .62; }
+#serverList a.archived:hover, #serverList a.archived.active { opacity: 1; }
+.archived-banner { display: flex; align-items: center; gap: 12px; margin: 10px 0 0; padding: 8px 14px; border-radius: 10px; border: 1px solid var(--border); background: var(--panel-2); color: var(--muted); }
+.archived-banner span { flex: 1; }
+.toggle.sub-toggle { display: flex; margin: -4px 0 6px 26px; font-size: 13px; }

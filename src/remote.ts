@@ -2,6 +2,7 @@
 // The local listener (127.0.0.1, used by this system and the desktop app) is always on. Remote access is HTTPS-only so
 // passwords and API keys are never sent unencrypted over the network.
 import https from 'node:https';
+import { STREAMING_HTTP_OPTIONS } from './request-deadline.ts';
 import type http from 'node:http';
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
@@ -93,7 +94,7 @@ export async function applyRemote(config: RemoteConfig, handler: http.RequestLis
   if (!config.enabled) return;
   try {
     const { pfx, passphrase } = await ensureCertificate();
-    const s = https.createServer({ pfx, passphrase }, handler);
+    const s = https.createServer({ ...STREAMING_HTTP_OPTIONS, pfx, passphrase }, handler);
     await new Promise<void>((resolve, reject) => {
       s.once('error', reject);
       s.listen(config.port, '0.0.0.0', () => resolve());

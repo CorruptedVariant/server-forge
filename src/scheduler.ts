@@ -317,6 +317,7 @@ async function runTask(task: Task, why: string) {
 // Check every 15 seconds.
 setInterval(() => {
   const now = Date.now();
-  const servers = new Set(listInstances().map((i) => i.id));
+  // Archived servers are put away: their tasks wait until they're unarchived.
+  const servers = new Set(listInstances().filter((i) => !i.record.archivedAt).map((i) => i.id));
   for (const task of tasks) if (servers.has(task.serverId) && isDue(task, now)) void runTask(task, 'scheduled');
 }, 15_000).unref();

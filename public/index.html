@@ -136,6 +136,10 @@
           <span id="svCountdownText"></span>
           <button class="small" id="btnCancelCountdown">Cancel</button>
         </div>
+        <div class="archived-banner" id="svArchived" hidden>
+          <span id="svArchivedText"></span>
+          <button class="small" data-perm="server.delete" id="btnUnarchiveBanner">Unarchive</button>
+        </div>
         <p class="error-banner" id="svError" hidden></p>
 
         <div class="tabs" id="tabs">
@@ -355,6 +359,13 @@
                 <p class="muted">A full copy (world, addons, settings) as a new server, e.g. to test addon updates without touching this world. It gets its own ports, so both can run at once. Safe while this server is running.</p>
               </div>
               <button type="button" id="btnClone">Make a copy…</button>
+            </section>
+            <section class="copy-zone archive-zone" data-perm="server.delete">
+              <div>
+                <h3 id="archiveTitle">Archive this server</h3>
+                <p class="muted" id="archiveHelp">Keep it, with its files and backups, but hide it from the server list (it shows under "Archived" instead). An archived server can't be started and gets no automatic updates or scheduled tasks. Handy for the old copy of a server you've moved. The server must be stopped.</p>
+              </div>
+              <button type="button" id="btnArchive">Archive server</button>
             </section>
             <section class="danger-zone" data-perm="server.delete">
               <div>
@@ -1049,7 +1060,8 @@
       <label for="moveTarget">Move it to</label>
       <select id="moveTarget" required></select>
       <label class="toggle"><input type="checkbox" id="moveKeepOld"> Keep the old copy there (stopped)</label>
-      <p class="muted small-text">Otherwise the old copy is removed once the move has worked; its files go to the Recycle Bin (Trash on Linux) on that system.</p>
+      <label class="toggle sub-toggle" id="moveArchiveRow" hidden><input type="checkbox" id="moveArchiveOld" checked> Archive it (hide it from the server list)</label>
+      <p class="muted small-text" id="moveKeepHelp">Otherwise the old copy is removed once the move has worked; its files go to the Recycle Bin (Trash on Linux) on that system.</p>
     </div>
     <div id="moveProgress" hidden>
       <div class="job-bar" id="moveBarBox"><div id="moveBar"></div></div>

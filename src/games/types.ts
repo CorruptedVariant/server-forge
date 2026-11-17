@@ -36,6 +36,8 @@ export interface ServerRecord {
   backupSchedule?: { everyHours: number; keep: number };
   /** Install new game versions by itself (Bedrock) instead of asking first. */
   autoUpdate?: boolean;
+  /** When it was archived: kept with its files, but hidden from the server list and never started or updated. */
+  archivedAt?: number;
 }
 
 export interface Player {
