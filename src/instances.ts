@@ -26,6 +26,7 @@ import { enshrouded } from './games/enshrouded.ts';
 import { vrising } from './games/vrising.ts';
 import { zomboid } from './games/zomboid.ts';
 import { sevenDays } from './games/sevendays.ts';
+import { beammp } from './games/beammp.ts';
 import { listProxyServers } from './games/bungee-network.ts';
 import { setStatsSource, forgetStats } from './stats.ts';
 import { parseChatLine, recordChat } from './chat.ts';
@@ -34,7 +35,7 @@ import { createBackup, restoreBackup, pruneScheduled, listBackups, backupsFolder
 import { assertModifiable, recycle } from './files.ts';
 
 // "terraria" is Terraria with tModLoader (its id from before vanilla existed); "terraria-vanilla" is the official server.
-export const GAMES: Record<string, GameModule> = { bedrock, java, valheim, 'terraria-vanilla': terrariaVanilla, terraria, satisfactory, spaceengineers: spaceEngineers, factorio, palworld, enshrouded, vrising, zomboid, sevendays: sevenDays, hytale };
+export const GAMES: Record<string, GameModule> = { bedrock, java, valheim, 'terraria-vanilla': terrariaVanilla, terraria, satisfactory, spaceengineers: spaceEngineers, factorio, palworld, enshrouded, vrising, zomboid, sevendays: sevenDays, hytale, beammp };
 
 // runner.ts in development, runner.js in the installed (compiled) app: same folder and extension as this file.
 const thisFile = fileURLToPath(import.meta.url);

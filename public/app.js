@@ -1820,8 +1820,11 @@ async function renderOverview() {
         ['Server name', s.serverName],
         ['World', s.world],
         ['Port', s.port],
-        ['Crossplay', s.crossplay ? 'On' : 'Off'],
+        // Only games with a crossplay setting (Valheim).
+        ['Crossplay', s.crossplay === undefined ? null : s.crossplay ? 'On' : 'Off'],
         ['Join code', live.extra?.joinCode],
+        // BeamMP: whether its AuthKey was accepted for the public server list.
+        ['Server list', live.extra?.serverList],
         ['Public address', live.extra?.publicAddress],
         ['Last save', live.lastSave ? `${duration(Date.now() - live.lastSave)} ago` : null],
       ];
@@ -2476,6 +2479,11 @@ const UPDATE_GAMES = {
     source: 'GitHub (tModLoader releases)',
     autoHelp: "Automatic updates: when tModLoader releases a new version, players get a 5-minute countdown in chat, the world is backed up, the new version is installed and the server starts again. Players' tModLoader must be on the same version (Steam updates it). Checked every 30 minutes.",
     forceHelp: 'Force update: reinstalls the latest tModLoader right now, even if this server already looks up to date. Same steps: countdown, backup, install, start.',
+  },
+  beammp: {
+    source: 'GitHub (BeamMP-Server releases)',
+    autoHelp: "Automatic updates: when BeamMP releases a new server version, players get a 5-minute countdown in chat, the config and mods are backed up, the new server is downloaded and started again. Players' BeamMP launchers update by themselves. Checked every 30 minutes.",
+    forceHelp: 'Force update: downloads the latest BeamMP-Server right now, even if this one already looks up to date.',
   },
 };
 
@@ -3812,6 +3820,10 @@ function renderNewFields() {
     $('newEula').checked = false;
   }
   if (!game) return;
+  // Example name and folder for the game picked (the page's built-in hint is Valheim's).
+  const example = `My ${game.name.replace(/\s*\(.*\)$/, '')} server`;
+  $('newName').placeholder = example;
+  if (game.serverRoot) $('newFolder').placeholder = `${game.serverRoot}${game.serverRoot.includes('\\') ? '\\' : '/'}${example}`;
   const defaults = {
     port: game.id === 'hytale' ? '5520' : game.id === 'java' ? '25565' : '2456',
     world: 'Dedicated',
@@ -3822,6 +3834,10 @@ function renderNewFields() {
     'prop:difficulty': 'easy',
     'prop:max-players': '10',
   };
+  // The game's own starting values for typed boxes (its port, name...), from the system it's created on. Tick boxes and
+  // dropdowns keep their usual starting state (some games' defaults are for imports, e.g. Java's "custom" server type).
+  const typed = new Set(game.newFields.filter((f) => f.type === 'text' || f.type === 'number').map((f) => f.key));
+  for (const [k, v] of Object.entries(game.newDefaults ?? {})) if (typed.has(k) && v !== '' && v !== null) defaults[k] = String(v);
   for (const f of game.newFields) {
     const key = f.key;
     if (f.type === 'select') {
@@ -3924,6 +3940,7 @@ const GAME_BLURBS = {
   sevendays: 'Zombie survival crafting: build by day, defend at night. Console through its telnet admin port.',
   zomboid: 'Project Zomboid: survive the zombie apocalypse together. Console commands, admins and Steam Workshop mods in its settings.',
   vrising: 'Vampire survival: build a castle, hunt, rise. PvE or PvP.',
+  beammp: 'BeamNG.drive multiplayer. Car and map mods download to players when they join. Needs a free AuthKey from keymaster.beammp.com. Forward the port for TCP and UDP.',
 };
 function renderGamePicks() {
   const box = $('newGamePicks');
@@ -5931,7 +5948,7 @@ function renderAddonSites() {
   const L = addonState.labels;
   const files = addonState.accept.split(',').join(' / ');
   $('addonSitesHelp').textContent = inApp
-    ? `Opens the site in a Server Forge window. Download any ${L.noun} (${files}) there and it's installed on "${state.detail.name}" automatically.${state.detail.game === 'hytale' ? ' Check the mod page for Hytale version compatibility and required dependencies.' : " A warning is shown if it doesn't match this server's version."}`
+    ? `Opens the site in a Server Forge window. Download any ${L.noun} (${files}) there and it's installed on "${state.detail.name}" automatically.${state.detail.game === 'hytale' ? ' Check the mod page for Hytale version compatibility and required dependencies.' : state.detail.game === 'beammp' ? ' Players need the same BeamNG.drive version the mod was made for.' : " A warning is shown if it doesn't match this server's version."}`
     : `Opens the site in a new tab. Download a ${L.noun} there, then drop the file in the box above. (In the Server Forge desktop app, downloads install by themselves.)`;
   for (const link of addonState.links) {
     const btn = el('button', 'site-btn');

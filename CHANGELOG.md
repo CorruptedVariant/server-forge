@@ -1,5 +1,17 @@
 # Changelog
 
+## Server Forge 0.13.1
+
+Adds BeamMP servers: multiplayer for BeamNG.drive.
+
+- **BeamMP (BeamNG.drive).** Create or import a BeamMP server on Windows or Linux (including Docker/TrueNAS). Server Forge downloads BeamMP-Server from BeamMP's GitHub releases and sets the name, description, port, player and car limits, map, tags, guests and public/private listing from Settings. BeamMP needs a free AuthKey from keymaster.beammp.com (sign in with Discord), even for private servers.
+- **Console and players.** Console commands (`status`, `list`, `say`, `kick`...), the player list, kick from the Players tab, countdown messages and clean stops.
+- **Mods tab.** Drop car and map mod .zip files (players download them when they join), BeamMP Lua server plugins, or plugin packages with a Resources folder. Switch them on and off, remove them, or browse the BeamNG mod site and BeamMP forum from the tab. Map mods show the path to use for the map setting.
+- **Updates.** New BeamMP-Server versions are checked every 30 minutes and can be installed automatically.
+- **Port forwarding** shows that BeamMP needs its port forwarded for both TCP and UDP.
+- **Fix:** the New Server form showed Valheim's port (2456) for Palworld, Project Zomboid, 7 Days to Die and other games. It now shows each game's own default port, and the name and folder hints match the game you pick.
+- **Fix:** the Overview no longer shows a "Crossplay" line for games that don't have that setting.
+
 ## Server Forge 0.13.0
 
 Archive servers you no longer use, and more reliable server moves.

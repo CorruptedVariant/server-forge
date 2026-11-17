@@ -404,8 +404,17 @@ route('GET', '/api/games', async (ctx) => {
     canCommand: !!g.commands,
     hasProperties: !!g.properties,
     eula: g.eula ?? null,
-    // Fields for the "New server" form.
+    // Fields for the "New server" form, and the game's own starting values for them (port, name...).
     newFields: g.newFields ?? (g.quickFields ?? []).map((k) => g.fields.find((f) => f.key === k)).filter(Boolean),
+    newDefaults: (() => {
+      try {
+        const d = g.defaults({ installDir: '' });
+        const keys = (g.newFields ?? (g.quickFields ?? []).map((k) => ({ key: k }))).map((f) => f.key);
+        return Object.fromEntries(keys.filter((k) => d[k] !== undefined).map((k) => [k, d[k]]));
+      } catch {
+        return {};
+      }
+    })(),
   }));
 });
 

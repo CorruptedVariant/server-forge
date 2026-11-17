@@ -18,6 +18,7 @@ import { SATISFACTORY_APP } from './games/satisfactory.ts';
 import { SPACE_ENGINEERS_APP } from './games/spaceengineers.ts';
 import { readProperties } from './properties.ts';
 import { latestFactorio, installedFactorio } from './games/factorio.ts';
+import { latestBeammp, installedBeammp } from './games/beammp.ts';
 import { STEAM_APPS } from './games/steam-games.ts';
 import { isEndstone, latestEndstone, installedEndstone, endstoneBedrockVersion, compareVersions } from './games/endstone.ts';
 
@@ -172,6 +173,13 @@ const SOURCES: Record<string, Source> = {
     name: 'Factorio',
     latest: async () => ({ version: await latestFactorio('stable', 'alpha'), updated: null }),
     current: (inst) => installedFactorio(inst.record.installDir)?.version ?? null,
+    newer: newerDotted,
+  },
+  // BeamMP-Server releases on GitHub. Imported servers have no note of ours: use the version it printed at startup.
+  beammp: {
+    name: 'BeamMP-Server',
+    latest: async () => ({ version: await latestBeammp(), updated: null }),
+    current: (inst) => installedBeammp(inst.record.installDir) || inst.liveState().version || null,
     newer: newerDotted,
   },
   // tModLoader releases on GitHub (Terraria itself comes inside them).

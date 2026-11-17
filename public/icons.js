@@ -45,6 +45,8 @@ const ICONS = {
   sevendays: logo('sevendays'),
   zomboid: logo('zomboid'),
   vrising: logo('vrising'),
+  // BeamMP's logo (its GitHub organisation picture).
+  beammp: logo('beammp'),
   hytale: tile('#244052', '<path d="M8 6h5v8h6V6h5v20h-5v-8h-6v8H8z" fill="#e7c984"/>'),
   valheim: logo('valheim'),
 };

@@ -112,6 +112,13 @@ export async function portHelp(record: ServerRecord, connection: { port: number 
     forwards.push({ protocol: 'TCP & UDP', ports: String(port ?? 7777), why: 'The game port; the server’s HTTPS API (used by the in-game Server Manager) is on it too.' });
     forwards.push({ protocol: 'TCP', ports: String(Number(record.settings.reliablePort) || 8888), why: 'Reliable messaging (needed since Satisfactory 1.1).' });
     notes.push('Players join from Server Manager → Add Server, with your public IP and the game port.');
+  } else if (record.game === 'beammp') {
+    forwards.push({ protocol: 'TCP & UDP', ports: String(port ?? 30814), why: 'BeamMP uses the same port for both: TCP for joining and mod downloads, UDP for car positions.' });
+    notes.push(
+      record.settings.public === true || record.settings.public === 'true'
+        ? 'Players find the server in the BeamMP launcher’s server list, or use Direct Connect with your public IP and port.'
+        : 'The server is private: players join from the BeamMP launcher with Direct Connect, using your public IP and port.',
+    );
   } else if (port) {
     forwards.push({ protocol: connection?.protocol === 'UDP' ? 'UDP' : 'TCP', ports: String(port), why: 'The port players connect to.' });
   }
