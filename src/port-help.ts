@@ -2,6 +2,7 @@
 // problems Server Forge can spot (e.g. a Bedrock server-udp-ports line still holding an old public IP).
 import path from 'node:path';
 import { existsSync } from 'node:fs';
+import { isIP } from 'node:net';
 import { readProperties } from './properties.ts';
 import { lanAddress, listInstances, foldersUsedElsewhere } from './instances.ts';
 import { lookupPublicIp } from './public-ip.ts';
@@ -10,6 +11,7 @@ import type { ServerRecord } from './games/types.ts';
 export interface Forward {
   protocol: 'UDP' | 'TCP' | 'TCP & UDP';
   ports: string;
+  insidePorts?: string;
   why: string;
 }
 export interface PortProblem {
@@ -18,81 +20,172 @@ export interface PortProblem {
   fix?: { key: string; value: string; label: string };
 }
 
-const RANGE_SIZE = 20;
-const RANGE_START = 35570;
+interface PortRange { from: number; to: number }
+interface UdpMapping {
+  ip: string | null;
+  outside: PortRange | null;
+  inside: PortRange;
+}
 
-/** Bedrock's "server-udp-ports=IP:from-to:from-to" (NetherNet: players outside the network connect through these). */
+function portRange(value: string): PortRange | null {
+  const m = /^(\d+)(?:-(\d+))?$/.exec(value);
+  if (!m) return null;
+  const from = Number(m[1]);
+  const to = Number(m[2] ?? m[1]);
+  return from > 0 && to >= from && to <= 65535 ? { from, to } : null;
+}
+
+function rangeLabel(range: PortRange): string {
+  return range.from === range.to ? String(range.from) : `${range.from}-${range.to}`;
+}
+
+function udpValues(lines: string[]): string[] {
+  return lines.flatMap((line) => {
+    const value = /^\s*server-udp-ports\s*=(.*)$/.exec(line)?.[1]?.trim();
+    return value ? [value] : [];
+  });
+}
+
+function udpMappings(values: string[]): UdpMapping[] {
+  return values.flatMap((value) => value.split(',')).flatMap((entry) => {
+    const m = /^(?:(\[[^\]]+\]|\d+(?:\.\d+){3}):)?(?:(\d+(?:-\d+)?):)?(\d+(?:-\d+)?)$/.exec(entry.trim());
+    if (!m) return [];
+    const ip = m[1]?.replace(/^\[|\]$/g, '') ?? null;
+    const outside = m[2] ? portRange(m[2]) : null;
+    const inside = portRange(m[3]);
+    if (!inside || (ip && (!m[2] || !isIP(ip))) || (m[2] && (!outside || outside.to - outside.from !== inside.to - inside.from))) return [];
+    return [{ ip, outside, inside }];
+  });
+}
+
+/** Used by the existing single-range public IP health warning. */
 export function parseUdpPorts(value: string | undefined): { ip: string; from: number; to: number } | null {
-  const m = /^\s*(\d{1,3}(?:\.\d{1,3}){3}):(\d+)-(\d+)(?::\d+-\d+)?\s*$/.exec(value ?? '');
-  return m ? { ip: m[1], from: Number(m[2]), to: Number(m[3]) } : null;
+  const [mapping, ...rest] = udpMappings(value ? [value] : []);
+  return mapping?.ip && isIP(mapping.ip) === 4 && mapping.outside && !rest.length && !value?.includes(',')
+    ? { ip: mapping.ip, ...mapping.outside }
+    : null;
 }
 
-function bedrockProps(record: ServerRecord) {
-  return readProperties(path.join(record.installDir, 'server.properties')).values;
-}
-
-/**
- * A free block of 20 UDP ports for server-udp-ports, clear of every other Bedrock server's block and game port, here
- * and in the other Server Forges on this system (e.g. the development panel next to the installed one).
- */
-function freeUdpRange(selfId: string): { from: number; to: number } {
+function freeUdpRange(record: ServerRecord, gamePort: number, size: number): PortRange | null {
+  const used = [{ from: gamePort, to: gamePort }];
   const folders = [
-    ...listInstances()
-      .filter((i) => i.record.game === 'bedrock' && i.id !== selfId)
-      .map((i) => i.record.installDir),
+    ...listInstances().filter((i) => i.record.game === 'bedrock' && i.id !== record.id && !i.record.archivedAt).map((i) => i.record.installDir),
     ...foldersUsedElsewhere(),
   ];
-  const used: { from: number; to: number }[] = [];
   for (const dir of folders) {
     const file = path.join(dir, 'server.properties');
     if (!existsSync(file)) continue;
     try {
-      const values = readProperties(file).values;
-      const udp = parseUdpPorts(values.get('server-udp-ports'));
-      if (udp) used.push(udp);
-      for (const key of ['server-port', 'server-portv6']) {
-        const p = Number(values.get(key));
-        if (p) used.push({ from: p, to: p });
+      const { lines, values } = readProperties(file);
+      const port = Number(values.get('server-port')) || 19132;
+      used.push({ from: port, to: port });
+      for (const mapping of udpMappings(udpValues(lines))) {
+        used.push(mapping.inside);
+        if (mapping.outside) used.push(mapping.outside);
       }
     } catch {}
   }
-  for (let from = RANGE_START; from < 65000; from += RANGE_SIZE) {
-    const to = from + RANGE_SIZE - 1;
-    if (!used.some((u) => from <= u.to && to >= u.from)) return { from, to };
+  for (let from = 35570; from + size - 1 <= 65535; from += size) {
+    const to = from + size - 1;
+    if (!used.some((range) => from <= range.to && to >= range.from)) return { from, to };
   }
-  return { from: RANGE_START, to: RANGE_START + RANGE_SIZE - 1 };
+  return null;
+}
+
+/** Merge adjacent mappings with the same offset into one router rule. */
+function udpForwards(mappings: UdpMapping[]): Forward[] {
+  const ipv4 = mappings.flatMap(({ ip, outside, inside }) =>
+    outside && (!ip || isIP(ip) === 4) ? [{ outside: { ...outside }, inside: { ...inside } }] : []);
+  ipv4.sort((a, b) => a.outside.from - b.outside.from);
+  const merged: typeof ipv4 = [];
+  for (const current of ipv4) {
+    const last = merged.at(-1);
+    if (last && last.outside.to + 1 === current.outside.from && last.inside.to + 1 === current.inside.from) {
+      last.outside.to = current.outside.to;
+      last.inside.to = current.inside.to;
+    } else merged.push(current);
+  }
+  return merged.map(({ outside, inside }) => ({
+    protocol: 'UDP', ports: rangeLabel(outside), insidePorts: rangeLabel(inside), why: 'NetherNet gameplay (server-udp-ports).',
+  }));
 }
 
 export async function portHelp(record: ServerRecord, connection: { port: number | null; protocol: string } | null) {
-  const lanIp = lanAddress();
+  let lanIp = lanAddress();
   const publicIp = await lookupPublicIp();
   const forwards: Forward[] = [];
   const problems: PortProblem[] = [];
   const notes: string[] = [];
-  const port = connection?.port;
+  let port = connection?.port;
+  let bedrockSetup: { title: string; properties: string } | undefined;
 
   if (record.game === 'bedrock') {
-    const props = bedrockProps(record);
-    const gamePort = Number(props.get('server-port')) || 19132;
-    forwards.push({ protocol: 'UDP', ports: String(gamePort), why: 'The game port players connect to.' });
-    const udp = parseUdpPorts(props.get('server-udp-ports'));
-    if (udp) {
-      forwards.push({ protocol: 'UDP', ports: `${udp.from}-${udp.to}`, why: 'Player connections (server-udp-ports). Newer Bedrock versions connect players outside your network through these.' });
-      if (publicIp && udp.ip !== publicIp) {
+    const { values: props, lines } = readProperties(path.join(record.installDir, 'server.properties'));
+    const gamePort = port = Number(props.get('server-port')) || 19132;
+    const bind = props.get('server-ip')?.trim() ?? '';
+    const raknet = props.get('transport')?.trim().toLowerCase() === 'raknet';
+    if (raknet) {
+      forwards.push({ protocol: 'UDP', ports: String(gamePort), why: 'Game connection for this server’s current RakNet configuration.' });
+      notes.push('Current Bedrock clients use NetherNet. If players get Unsupported Transport (Error 149), update the server, set transport=nethernet in server.properties and reopen this guide to get the new router rules.');
+    } else {
+      if (isIP(bind) === 4 && bind !== '0.0.0.0' && !bind.startsWith('127.')) lanIp = bind;
+      forwards.push({ protocol: 'TCP & UDP', ports: String(gamePort), why: 'Main server port. NetherNet starts the connection over TCP.' });
+      const values = udpValues(lines);
+      const mappings = udpMappings(values);
+      const stale = [...new Set(mappings.flatMap(({ ip }) => ip && isIP(ip) === 4 && ip !== publicIp ? [ip] : []))];
+      const udp = udpForwards(mappings);
+      forwards.push(...udp);
+      if (publicIp && stale.length) {
+        const single = values.length === 1 && lines.filter((line) => /^\s*server-udp-ports\s*=/.test(line)).length === 1 && parseUdpPorts(values[0]);
         problems.push({
-          text: `server-udp-ports still has your old public IP (${udp.ip}). Your public IP is now ${publicIp}, so players outside your network can't join until it's updated (then restart the server).`,
-          fix: { key: 'server-udp-ports', value: `${publicIp}:${udp.from}-${udp.to}:${udp.from}-${udp.to}`, label: `Update it to ${publicIp}` },
+          text: `The gameplay mappings advertise ${stale.join(', ')}. This network reports ${publicIp}. If you forward directly to this system, use its current public IPv4 in the mappings.`,
+          fix: single && single.ip !== publicIp
+            ? { key: 'server-udp-ports', value: values[0].replace(single.ip, publicIp), label: `Update it to ${publicIp}` }
+            : undefined,
         });
       }
-      if (gamePort >= udp.from && gamePort <= udp.to) problems.push({ text: `The game port ${gamePort} is inside the server-udp-ports range ${udp.from}-${udp.to}. Use a range that doesn't include it.` });
-    } else {
-      const r = freeUdpRange(record.id);
-      problems.push({
-        text: 'No server-udp-ports set. Since Bedrock 1.26.50 players outside your network also connect through a range of UDP ports, so without one only players on your network (or friends via Xbox) can join.',
-        fix: publicIp ? { key: 'server-udp-ports', value: `${publicIp}:${r.from}-${r.to}:${r.from}-${r.to}`, label: `Use ports ${r.from}-${r.to}` } : undefined,
-      });
+      if (mappings.some(({ inside, outside }) => [inside, outside].some((range) => range && gamePort >= range.from && gamePort <= range.to))) {
+        problems.push({ text: `The gameplay UDP ports include the main port ${gamePort}. Use a separate range when forwarding both protocols on the main port.` });
+      }
+      const localOnly = mappings.filter((mapping) => !mapping.outside).map(({ inside }) => rangeLabel(inside));
+      if (localOnly.length) notes.push(`Allow local UDP ${localOnly.join(', ')} in the host firewall. These entries set the ports Bedrock can use locally.`);
+      if (values.length && mappings.length !== values.join(',').split(',').filter((entry) => entry.trim()).length) {
+        problems.push({ text: 'Some server-udp-ports entries could not be read. Check the file before applying the router rules.' });
+      }
+      const playerLimit = Math.max(1, Math.floor(Number(props.get('max-players')) || 10));
+      const range = !values.length ? freeUdpRange(record, gamePort, Math.min(playerLimit, 15)) : null;
+      const suggested = range ? Array.from({ length: range.to - range.from + 1 }, (_, i) => {
+        const p = range.from + i;
+        return `${publicIp ?? '<public IPv4>'}:${p}:${p}`;
+      }) : [];
+      if (range) {
+        const label = rangeLabel(range);
+        if (publicIp && lines.filter((line) => /^\s*server-udp-ports\s*=/.test(line)).length <= 1) {
+          problems.push({
+            text: `If the main port is reachable but outside players still cannot join, you can explicitly forward UDP ${label} to the same ports on ${lanIp}.`,
+            fix: { key: 'server-udp-ports', value: suggested.join(','), label: `Configure UDP ${label}` },
+          });
+        }
+        notes.push(`For the optional setup below, forward UDP ${label} to the same ports on ${lanIp}, and allow them in the host firewall.`);
+        if (playerLimit > 15) notes.push(`The example provides 15 gameplay ports for a server configured for ${playerLimit} players. Verify larger pools with your Bedrock build before relying on them.`);
+      }
+      bedrockSetup = {
+        title: values.length ? 'Your Bedrock server.properties' : 'Bedrock server.properties for explicit UDP forwarding',
+        properties: [
+          'transport=nethernet', `server-port=${gamePort}`, `server-ip=${bind}`,
+          ...values.map((value) => `server-udp-ports=${value}`),
+          ...suggested.map((entry) => `server-udp-ports=${entry}`),
+        ].join('\n'),
+      };
+      notes.push(
+        `Reserve ${lanIp} on your router and forward to that LAN address. For a TrueNAS host-network app, use the TrueNAS LAN address. After a move or LAN IP change, point the router rules at the new host.`,
+        `Leave server-ip empty to listen on all interfaces. If the console says ready but there is no TCP listener on port ${gamePort}, set server-ip to the host's LAN IPv4, then restart. This restored the listener on TrueNAS.`,
+        'Fixed gameplay ports are optional on networks that allow UDP and its return traffic. For the setup that worked on TrueNAS, use one explicit UDP port per simultaneous player. Put the public IPv4 in each server-udp-ports mapping. Each entry is PUBLIC_IP:OUTSIDE_PORT:INSIDE_PORT.',
+        'ASN Converter Test used 19442 for the main port and UDP 19450–19464 for 15 players. The tested Bedrock build rejected more than 16 explicit mappings. Check the startup console before using larger pools.',
+        'Allow the ports shown in the host firewall. Stop Bedrock before editing server.properties in the Files tab, then start it again. Server Forge updates mappings that use the previous public IPv4 when it detects a change. Restart a running server to apply the new address.',
+        'Test an actual join from outside your network using the public IPv4 and main port, such as a laptop on a phone hotspot. If the TCP port answers but joining stalls, recheck the advertised IP and gameplay UDP rules.',
+      );
     }
-    notes.push('Restart the server after changing server-udp-ports.');
   } else if (record.game === 'valheim') {
     const p = port ?? 2456;
     // The game itself talks over UDP (Steam networking); many guides and routers forward TCP too, which is harmless.
@@ -129,6 +222,7 @@ export async function portHelp(record: ServerRecord, connection: { port: number 
     forwards,
     problems,
     notes,
+    bedrockSetup,
     joinAddress: publicIp && port ? `${publicIp}:${port}` : null,
   };
 }

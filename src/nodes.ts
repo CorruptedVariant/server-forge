@@ -34,6 +34,7 @@ interface NodeState {
   servers: Map<string, Record<string, unknown>>;
   stream: IncomingMessage | null;
   retry: NodeJS.Timeout | null;
+  offlineTimer: NodeJS.Timeout | null;
   restarting: boolean;
 }
 
@@ -52,7 +53,7 @@ export const isRemoteId = (id: string) => id.startsWith(PREFIX);
 function state(id: string): NodeState {
   let s = states.get(id);
   if (!s) {
-    s = { online: false, error: null, version: null, servers: new Map(), stream: null, retry: null, restarting: false };
+    s = { online: false, error: null, version: null, servers: new Map(), stream: null, retry: null, offlineTimer: null, restarting: false };
     states.set(id, s);
   }
   return s;
@@ -183,16 +184,18 @@ export function renameNode(id: string, name: string) {
   const n = getNode(id);
   n.name = String(name ?? '').trim().slice(0, 40) || n.name;
   writeJson(FILE, nodes);
-  for (const snap of state(id).servers.values()) events.emit('remote-server', decorate(n, snap));
+  const s = state(id);
+  for (const snap of s.servers.values()) events.emit('remote-server', decorate(n, snap, s.online));
 }
 
 export function removeNode(id: string) {
   const n = getNode(id);
   const s = state(id);
+  states.delete(id);
   s.stream?.destroy();
   if (s.retry) clearTimeout(s.retry);
+  if (s.offlineTimer) clearTimeout(s.offlineTimer);
   for (const serverId of s.servers.keys()) events.emit('remote-removed', remoteId(n.id, serverId));
-  states.delete(id);
   nodes = nodes.filter((x) => x.id !== id);
   writeJson(FILE, nodes);
 }
@@ -200,15 +203,20 @@ export function removeNode(id: string) {
 // ---------- the live stream from each node ----------
 
 /** A node's server snapshot as this panel shows it: its own id, and which node it's on. */
-function decorate(node: NodeRecord, snap: Record<string, unknown>) {
-  return { ...snap, id: remoteId(node.id, String(snap.id)), node: { id: node.id, name: node.name } };
+function decorate(node: NodeRecord, snap: Record<string, unknown>, online = true) {
+  return {
+    ...snap,
+    ...(online ? {} : { status: 'unknown', nodeOffline: true }),
+    id: remoteId(node.id, String(snap.id)),
+    node: { id: node.id, name: node.name },
+  };
 }
 
 export function remoteServers(): Record<string, unknown>[] {
   const out: Record<string, unknown>[] = [];
   for (const n of nodes) {
     const s = state(n.id);
-    for (const snap of s.servers.values()) out.push(decorate(n, s.online ? snap : { ...snap, status: 'unknown', nodeOffline: true }));
+    for (const snap of s.servers.values()) out.push(decorate(n, snap, s.online));
   }
   return out;
 }
@@ -248,9 +256,7 @@ function handleEvent(node: NodeRecord, event: string, data: string) {
   }
 }
 
-async function refreshServers(node: NodeRecord) {
-  const list = await nodeJson<Record<string, unknown>[]>(node, 'GET', '/api/servers');
-  const s = state(node.id);
+function applyServerList(node: NodeRecord, s: NodeState, list: Record<string, unknown>[]) {
   const seen = new Set<string>();
   for (const snap of list) {
     seen.add(String(snap.id));
@@ -272,95 +278,131 @@ const STREAM_SILENCE_MS = 70_000;
 // While connected, the full server list is fetched again this often too, in case an event was missed anyway.
 const REFRESH_MS = 2 * 60_000;
 
-/** A Tavern Vault-only node has no servers or live stream: it's checked every 30 s to know if it's up. */
-function connectVault(node: NodeRecord) {
-  const s = state(node.id);
-  if (s.retry) clearTimeout(s.retry);
-  (async () => {
-    const was = s.online;
-    try {
-      const me = await nodeJson<{ version?: string }>(node, 'GET', '/api/me');
-      s.online = true;
-      s.error = null;
-      s.version = me?.version ?? null;
-    } catch (err) {
-      s.online = false;
-      s.error = (err as Error).message;
-    }
-    if (was !== s.online) events.emit('nodes');
-    if (nodes.some((n) => n.id === node.id)) s.retry = setTimeout(() => connectVault(node), 30_000);
-  })();
+// A dropped stream can be a brief network hiccup or a listener reload. Give the node time to
+// answer a fresh request before changing its status and all its servers to unknown.
+const OFFLINE_GRACE_MS = 20_000;
+const QUICK_RETRY_MS = 3_000;
+const OFFLINE_RETRY_MS = 10_000;
+
+function markOnline(s: NodeState) {
+  if (s.offlineTimer) clearTimeout(s.offlineTimer);
+  s.offlineTimer = null;
+  const changed = !s.online || s.restarting;
+  s.online = true;
+  s.restarting = false;
+  s.error = null;
+  if (changed) events.emit('nodes');
 }
 
-function connect(node: NodeRecord) {
-  if (node.kind === 'vault') return connectVault(node);
+function recordFailure(node: NodeRecord, s: NodeState, error: string) {
+  const previousError = s.error;
+  s.error = error;
+  if (!s.online) {
+    if (previousError !== error) events.emit('nodes');
+    return;
+  }
+  const markOffline = () => {
+    s.offlineTimer = null;
+    s.online = false;
+    for (const snap of s.servers.values()) events.emit('remote-server', decorate(node, snap, false));
+    events.emit('nodes');
+  };
+  if (s.restarting) markOffline();
+  else s.offlineTimer ??= setTimeout(markOffline, OFFLINE_GRACE_MS).unref();
+}
+
+/** A Tavern Vault-only node has no servers or live stream, so poll its API for reachability. */
+async function connectVault(node: NodeRecord, s: NodeState) {
+  try {
+    const me = await nodeJson<{ version?: string }>(node, 'GET', '/api/me');
+    if (states.get(node.id) !== s) return;
+    s.version = me?.version ?? null;
+    markOnline(s);
+  } catch (err) {
+    if (states.get(node.id) !== s) return;
+    recordFailure(node, s, (err as Error).message);
+  }
+  s.retry = setTimeout(() => connect(node), s.offlineTimer ? QUICK_RETRY_MS : 30_000);
+}
+
+async function connect(node: NodeRecord) {
   const s = state(node.id);
-  if (s.retry) clearTimeout(s.retry);
+  s.retry = null;
+  if (node.kind === 'vault') return connectVault(node, s);
   let watchdog: NodeJS.Timeout | null = null;
   let done = false;
+  const active = () => !done && states.get(node.id) === s;
   const retry = (err: string) => {
     if (done) return;
     done = true;
     if (watchdog) clearInterval(watchdog);
-    const wasOnline = s.online;
-    s.online = false;
-    s.error = s.restarting ? 'Restarting (update)…' : err;
+    if (states.get(node.id) !== s) return;
     s.stream = null;
-    if (wasOnline) {
-      events.emit('nodes');
-      for (const snap of s.servers.values()) events.emit('remote-server', decorate(node, { ...snap, status: 'unknown', nodeOffline: true }));
-    }
-    if (nodes.some((n) => n.id === node.id)) s.retry = setTimeout(() => connect(node), s.restarting ? 3000 : 10_000);
+    recordFailure(node, s, err);
+    s.retry = setTimeout(() => connect(node), s.online || s.restarting ? QUICK_RETRY_MS : OFFLINE_RETRY_MS);
   };
-  (async () => {
-    try {
-      const me = await nodeJson<{ version?: string }>(node, 'GET', '/api/me');
-      s.version = me?.version ?? null;
-      await refreshServers(node);
-      const res = await nodeRequest(node, 'GET', '/api/events', { timeoutMs: 0 });
-      if ((res.statusCode ?? 500) >= 400) throw new Error(`The node refused the connection (${res.statusCode}). Its key may have been deleted.`);
-      s.stream = res;
-      s.online = true;
-      s.error = null;
-      s.restarting = false;
-      events.emit('nodes');
-      let lastData = Date.now();
-      let lastRefresh = Date.now();
-      watchdog = setInterval(() => {
-        if (Date.now() - lastData > STREAM_SILENCE_MS) {
-          res.destroy();
-          retry('The node stopped answering.');
-        } else if (Date.now() - lastRefresh > REFRESH_MS) {
-          lastRefresh = Date.now();
-          refreshServers(node).catch(() => {});
-        }
-      }, 10_000);
-      watchdog.unref();
-      let buf = '';
-      res.setEncoding('utf-8');
-      res.on('data', (chunk: string) => {
-        lastData = Date.now();
-        buf += chunk;
-        let at: number;
-        while ((at = buf.indexOf('\n\n')) >= 0) {
-          const block = buf.slice(0, at);
-          buf = buf.slice(at + 2);
-          let ev = 'message';
-          const data: string[] = [];
-          for (const line of block.split('\n')) {
-            if (line.startsWith('event: ')) ev = line.slice(7).trim();
-            else if (line.startsWith('data: ')) data.push(line.slice(6));
-          }
-          if (data.length) handleEvent(node, ev, data.join('\n'));
-        }
-      });
-      res.on('end', () => retry('The node closed the connection.'));
-      res.on('close', () => retry('The node closed the connection.'));
-      res.on('error', (err) => retry(err.message));
-    } catch (err) {
-      retry((err as Error).message);
+  const fetchServers = async () => {
+    const list = await nodeJson<Record<string, unknown>[]>(node, 'GET', '/api/servers', undefined, 10_000);
+    if (!Array.isArray(list)) throw new Error('The node returned an invalid server list.');
+    if (!active()) return;
+    // The API is reachable even if reopening the live stream takes longer.
+    if (!s.stream) markOnline(s);
+    applyServerList(node, s, list);
+  };
+  try {
+    const me = await nodeJson<{ version?: string }>(node, 'GET', '/api/me', undefined, 10_000);
+    if (!active()) return;
+    s.version = me?.version ?? null;
+    await fetchServers();
+    if (!active()) return;
+    const res = await nodeRequest(node, 'GET', '/api/events', { timeoutMs: 10_000 });
+    if (!active()) {
+      res.destroy();
+      return;
     }
-  })();
+    if (res.statusCode !== 200 || !res.headers['content-type']?.startsWith('text/event-stream')) {
+      res.destroy();
+      throw new Error(`The node refused the live connection (${res.statusCode}).`);
+    }
+    res.setTimeout(0);
+    s.stream = res;
+    let lastData = Date.now();
+    let lastRefresh = Date.now();
+    watchdog = setInterval(() => {
+      if (Date.now() - lastData > STREAM_SILENCE_MS) {
+        res.destroy();
+        retry('The node stopped answering.');
+      } else if (Date.now() - lastRefresh > REFRESH_MS) {
+        lastRefresh = Date.now();
+        fetchServers().catch(() => {});
+      }
+    }, 10_000);
+    watchdog.unref();
+    let buf = '';
+    res.setEncoding('utf-8');
+    res.on('data', (chunk: string) => {
+      if (!active()) return;
+      lastData = Date.now();
+      buf += chunk;
+      let at: number;
+      while ((at = buf.indexOf('\n\n')) >= 0) {
+        const block = buf.slice(0, at);
+        buf = buf.slice(at + 2);
+        let ev = 'message';
+        const data: string[] = [];
+        for (const line of block.split('\n')) {
+          if (line.startsWith('event: ')) ev = line.slice(7).trim();
+          else if (line.startsWith('data: ')) data.push(line.slice(6));
+        }
+        if (data.length) handleEvent(node, ev, data.join('\n'));
+      }
+    });
+    res.on('end', () => retry('The node closed the connection.'));
+    res.on('close', () => retry('The node closed the connection.'));
+    res.on('error', (err) => retry(err.message));
+  } catch (err) {
+    retry((err as Error).message);
+  }
 }
 
 export function startNodes() {

@@ -2,7 +2,7 @@
 // the same port, a world growing unusually fast, failed backups and crashes. Checked every minute (folder sizes
 // hourly). Each warning is raised once and cleared when the problem goes away; both are announced on the 'alert'
 // event (the live stream passes it on, so Watcher can post it). The owner can dismiss one until it comes back.
-import { statfsSync, existsSync } from 'node:fs';
+import { statfsSync, existsSync, readFileSync } from 'node:fs';
 import { readdir, lstat } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
@@ -12,8 +12,9 @@ import { serverStats } from './stats.ts';
 import { readJson, writeJson } from './store.ts';
 import { lookupPublicIp } from './public-ip.ts';
 import { parseUdpPorts } from './port-help.ts';
-import { readProperties } from './properties.ts';
-import type { JobInfo } from './jobs.ts';
+import { readProperties, writePropertiesText } from './properties.ts';
+import { runningJob, type JobInfo } from './jobs.ts';
+import { replaceBedrockPublicIp } from './games/bedrock-network.ts';
 
 export interface Alert {
   id: string;
@@ -247,7 +248,9 @@ events.on('start-blocked', (e: { serverId: string; reason: string }) => {
   raise({ id: `start-blocked:${e.serverId}`, serverId: e.serverId, level: 'error', title: `"${name}" was not started`, detail: e.reason });
 });
 events.on('state', (serverId: string) => {
-  if (listInstances().find((i) => i.id === serverId)?.isRunning) clear(`start-blocked:${serverId}`);
+  const inst = listInstances().find((i) => i.id === serverId);
+  if (inst?.isRunning) clear(`start-blocked:${serverId}`);
+  if (!inst?.startedAt) clear(`udp-ports-restart:${serverId}`);
 });
 events.on('removed', (serverId: string) => {
   for (const [id, a] of active) if (a.serverId === serverId) clear(id);
@@ -256,50 +259,98 @@ events.on('removed', (serverId: string) => {
 // Public IP changes: players outside the network join with the public IP, and Bedrock's server-udp-ports has it
 // written in, so a change (most home internet gets a new one now and then) quietly stops outside players joining.
 const PUBLIC_IP_FILE = 'public-ip.json';
+const PUBLIC_IP_INTERVAL = 5 * 60_000;
+interface PublicIpState {
+  ip: string | null;
+  changedAt: number | null;
+  previous: string | null;
+  bedrockRestarts?: Record<string, number>;
+}
+
 async function checkPublicIp() {
-  const ip = await lookupPublicIp(25 * 60_000);
+  const ip = await lookupPublicIp({ maxAgeMs: 0, allowStale: false });
   if (!ip) return;
-  const seen = readJson<{ ip: string | null; changedAt: number | null; previous: string | null }>(PUBLIC_IP_FILE, { ip: null, changedAt: null, previous: null });
-  if (seen.ip && seen.ip !== ip) writeJson(PUBLIC_IP_FILE, { ip, changedAt: Date.now(), previous: seen.ip });
-  else if (!seen.ip) writeJson(PUBLIC_IP_FILE, { ip, changedAt: null, previous: null });
-  const now = readJson<typeof seen>(PUBLIC_IP_FILE, seen);
+  const seen = readJson<PublicIpState>(PUBLIC_IP_FILE, { ip: null, changedAt: null, previous: null });
+  const changed = !!seen.ip && seen.ip !== ip;
+  const previous = changed ? seen.ip : seen.previous;
+  const changedAt = changed ? Date.now() : seen.changedAt;
+  const restarts: Record<string, number> = {};
+  const pendingAlerts = new Set<string>();
+  const staleAlerts = new Set<string>();
+  for (const inst of listInstances()) {
+    if (inst.record.game !== 'bedrock' || inst.record.archivedAt) continue;
+    const file = path.join(inst.record.installDir, 'server.properties');
+    const staleId = `udp-ports-ip:${inst.id}`;
+    let updated = false;
+    try {
+      if (previous && previous !== ip && !runningJob(inst.id) && (inst.status !== 'starting' || inst.startedAt) && existsSync(file)) {
+        const before = readFileSync(file, 'utf-8');
+        const after = replaceBedrockPublicIp(before, previous, ip);
+        if (after !== before) {
+          inst.assertNotOwnedElsewhere();
+          writePropertiesText(file, after);
+          updated = true;
+        }
+      }
+      const props = readProperties(file).values;
+      const udp = parseUdpPorts(props.get('server-udp-ports'));
+      if (props.get('transport')?.trim() !== 'raknet' && udp && udp.ip !== ip) {
+        staleAlerts.add(staleId);
+        raise({
+          id: staleId,
+          serverId: inst.id,
+          level: 'error',
+          title: `"${inst.record.name}": server-udp-ports uses a different public IP`,
+          detail: `It has ${udp.ip} and this system's public IP is ${ip}. Check the address under Port forwarding and restart the server after any changes.`,
+        });
+      }
+    } catch (err) {
+      staleAlerts.add(staleId);
+      raise({
+        id: staleId,
+        serverId: inst.id,
+        level: 'error',
+        title: `"${inst.record.name}": couldn't check or update server-udp-ports`,
+        detail: `Server Forge will try again. ${(err as Error).message}`,
+      });
+    }
+
+    const startedAt = inst.startedAt;
+    if (startedAt && (updated || seen.bedrockRestarts?.[inst.id] === startedAt)) {
+      restarts[inst.id] = startedAt;
+      const id = `udp-ports-restart:${inst.id}`;
+      pendingAlerts.add(id);
+      raise({
+        id,
+        serverId: inst.id,
+        level: 'warn',
+        title: `"${inst.record.name}": restart to apply its updated public IP`,
+        detail: 'Server Forge updated server-udp-ports. Restart the Bedrock server when ready to apply the new public IP.',
+      });
+    }
+  }
+  if (seen.ip !== ip || JSON.stringify(seen.bedrockRestarts ?? {}) !== JSON.stringify(restarts)) {
+    writeJson(PUBLIC_IP_FILE, { ip, changedAt, previous, bedrockRestarts: restarts });
+  }
+  sweep('udp-ports-ip:', staleAlerts);
+  sweep('udp-ports-restart:', pendingAlerts);
+
   // The general notice stays for 3 days (or until dismissed).
-  if (now.changedAt && Date.now() - now.changedAt < 3 * 86400_000) {
+  if (changed) clear('public-ip-changed');
+  if (changedAt && Date.now() - changedAt < 3 * 86400_000) {
     raise({
       id: 'public-ip-changed',
       serverId: null,
       level: 'warn',
       title: 'Your public IP address changed',
-      detail: `It was ${now.previous}, now it's ${ip}. Players outside your network need the new address, and share links from before the change stop working (make them again). Each server's "Port forwarding" help shows what to update.`,
+      detail: `It was ${previous}, now it's ${ip}. Players outside your network need the new address. Create new share links to use it.`,
     });
   } else clear('public-ip-changed');
-  // Bedrock servers whose server-udp-ports still holds another IP can't take outside players.
-  const still = new Set<string>();
-  for (const inst of listInstances()) {
-    if (inst.record.game !== 'bedrock') continue;
-    let udp;
-    try {
-      udp = parseUdpPorts(readProperties(path.join(inst.record.installDir, 'server.properties')).values.get('server-udp-ports'));
-    } catch {
-      continue;
-    }
-    if (!udp || udp.ip === ip) continue;
-    const id = `udp-ports-ip:${inst.id}`;
-    still.add(id);
-    raise({
-      id,
-      serverId: inst.id,
-      level: 'error',
-      title: `"${inst.record.name}": server-udp-ports has an old public IP`,
-      detail: `It has ${udp.ip} but your public IP is ${ip}, so players outside your network can't join. Open the server → Port forwarding to fix it, then restart the server.`,
-    });
-  }
-  sweep('udp-ports-ip:', still);
 }
 
 export function startHealthChecks() {
   setTimeout(() => checkPublicIp().catch(() => {}), 60_000).unref();
-  setInterval(() => checkPublicIp().catch(() => {}), 30 * 60_000).unref();
+  setInterval(() => checkPublicIp().catch(() => {}), PUBLIC_IP_INTERVAL).unref();
   const minute = () => {
     for (const check of [checkDisks, checkMemory, checkStuckAndCrashed, checkPorts]) {
       try {

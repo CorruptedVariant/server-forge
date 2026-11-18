@@ -1,5 +1,13 @@
 # Changelog
 
+## Server Forge 0.13.2
+
+Bedrock network setup and more reliable linked system status.
+
+- **Bedrock public IPv4:** Server Forge checks every five minutes and updates existing `server-udp-ports` mappings that use the previous public IPv4. Running servers get an alert to restart and apply the change.
+- **Bedrock port forwarding:** The guide shows the main NetherNet port, configured gameplay UDP rules, and `server.properties` settings. It includes the TrueNAS setup that worked for ASN Converter Test and explains how to check from outside the network.
+- **Linked systems:** Brief live connection drops no longer immediately mark systems offline. Server Forge retries, checks whether the node still answers, and refreshes server status on reconnect.
+
 ## Server Forge 0.13.1
 
 Adds BeamMP servers: multiplayer for BeamNG.drive.

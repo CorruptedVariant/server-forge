@@ -96,8 +96,13 @@ export function writeProperties(file: string, changes: Record<string, string>, d
     const help = describe?.(key);
     if (help) out.push(...help.split('\n').map((l) => `# ${l}`));
   }
+  writePropertiesText(file, out.join('\r\n') + '\r\n');
+}
+
+/** Replaces a properties file atomically when the caller needs to preserve its exact formatting. */
+export function writePropertiesText(file: string, text: string) {
   const tmp = `${file}.tavernhost-tmp`;
-  writeFileSync(tmp, out.join('\r\n') + '\r\n');
+  writeFileSync(tmp, text);
   renameSync(tmp, file);
 }
 

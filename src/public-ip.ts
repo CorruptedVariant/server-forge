@@ -1,16 +1,31 @@
-// This network's public address (what players outside it connect to), looked up at most hourly from api.ipify.org.
-// Used by share links, the port forwarding help and the "public IP changed" warning.
+// Public IPv4 of this network, used by share links, port forwarding help and the public IP monitor.
+import { isIPv4 } from 'node:net';
 
-let cached: { ip: string | null; at: number } = { ip: null, at: 0 };
+let cached: { ip: string; at: number } | null = null;
+let retryAt = 0;
+let pending: Promise<string | null> | null = null;
 
-export async function lookupPublicIp(maxAgeMs = 3600_000): Promise<string | null> {
-  if (Date.now() - cached.at < maxAgeMs) return cached.ip;
+async function refreshPublicIp(): Promise<string | null> {
   try {
     const res = await fetch('https://api.ipify.org', { signal: AbortSignal.timeout(5000) });
-    const ip = (await res.text()).trim();
-    cached = { ip: /^\d{1,3}(\.\d{1,3}){3}$/.test(ip) ? ip : null, at: Date.now() };
-  } catch {
-    cached = { ip: cached.ip, at: Date.now() - maxAgeMs + 600_000 }; // keep the last one; try again in 10 minutes
+    if (res.ok) {
+      const ip = (await res.text()).trim();
+      if (isIPv4(ip)) {
+        cached = { ip, at: Date.now() };
+        return ip;
+      }
+    }
+  } catch {}
+  retryAt = Date.now() + 60_000;
+  return null;
+}
+
+export async function lookupPublicIp({ maxAgeMs = 3600_000, allowStale = true } = {}): Promise<string | null> {
+  if (cached && Date.now() - cached.at < maxAgeMs) return cached.ip;
+  if (pending || Date.now() >= retryAt) {
+    pending ??= refreshPublicIp().finally(() => { pending = null; });
+    const ip = await pending;
+    if (ip) return ip;
   }
-  return cached.ip;
+  return allowStale ? cached?.ip ?? null : null;
 }

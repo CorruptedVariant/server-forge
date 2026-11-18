@@ -1270,7 +1270,7 @@ async function openPortsHelp(id) {
   const tbody = el('tbody');
   for (const f of h.forwards) {
     const tr = el('tr');
-    tr.append(el('td', null, f.protocol), el('td', 'mono', f.ports), el('td', 'mono', `${h.lanIp} (same ports)`), el('td', 'muted', f.why));
+    tr.append(el('td', null, f.protocol), el('td', 'mono', f.ports), el('td', 'mono', `${h.lanIp} (ports ${f.insidePorts ?? f.ports})`), el('td', 'muted', f.why));
     tbody.appendChild(tr);
   }
   table.append(thead, tbody);
@@ -1290,6 +1290,16 @@ async function openPortsHelp(id) {
   const ul = el('ul', 'muted small-text');
   for (const t of tips) ul.appendChild(el('li', null, t));
   body.appendChild(ul);
+  if (h.bedrockSetup) {
+    body.appendChild(el('h4', 'section-label', h.bedrockSetup.title));
+    const config = el('pre', 'ports-facts mono', h.bedrockSetup.properties);
+    body.appendChild(config);
+    const docs = el('a', 'small-text', 'Minecraft’s Bedrock dedicated server guide');
+    docs.href = 'https://help.minecraft.net/hc/en-us/articles/49914677714957';
+    docs.target = '_blank';
+    docs.rel = 'noopener noreferrer';
+    body.appendChild(docs);
+  }
 }
 $('portsClose').addEventListener('click', () => $('portsDialog').close());
 
