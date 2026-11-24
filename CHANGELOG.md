@@ -1,5 +1,18 @@
 # Changelog
 
+## Server Forge 0.14.0
+
+AI helpers, master panel backups, and better Bedrock add-on management.
+
+- **AI features (off by default, Settings → AI).** Sign in with Claude or ChatGPT and use the **SF Assistant**: chat sessions that can work on a chosen server, with Clear context, Stop and 5-hour/weekly usage caps. An **MCP connector** at `/mcp` gives other AI apps Server Forge's tools, using the caller's own API key and permissions.
+- **Player helper (Bedrock).** Players put a trigger word in chat to ask an AI about your server. Replies are sent privately. It has no tools of its own: console commands are checked against fixed rules, staff are checked live (Xbox ID, staff tag, operator), and staff commands need a one-time confirmation code.
+  - **Personality and replies:** give your helper its own personality (Friendly, Sassy, Pirate and Formal starters), choose what it does when a player is rude (stay polite, shut it down, don't answer, or roast them back, with optional swearing), and add your own reply rules and reply length. It can also be told which add-ons are switched on. These settings change how it talks, never what it may share or do, and some limits always apply.
+  - **Knowledge:** a document library for the helper, with public and staff-only documents, editing, uploads of .md/.txt files, and a warning when a document is longer than the helper reads.
+- **Master panel backups.** For servers on linked systems, the Backups tab can keep copies on the main panel's system: back up now or automatically every few hours while the server runs, keep the newest copies, download them, or send one back to the server to restore it. Works for every game that supports backups. Linked systems need 0.14.0 too.
+- **Bedrock add-ons: several builds side by side.** Keep several builds of one add-on (same pack ID) installed. Only the one the world loads shows as on, and switching another one on loads that build instead. Uploading a build replaces the one that's on, whether it's an upgrade or a downgrade. A replaced beta/alpha build (version numbers like 202.200.203) is kept switched off so you can go back to it, while a replaced release is overwritten.
+- **Fix:** with several copies of one add-on installed, switching one off switched them all off, and Remove could delete a different copy's folder. Each copy is now handled on its own, and the warning says which copy loads.
+- **Appearance:** "Basic UI" is now **Classic UI** and "Fancy UI" is now **Neon UI** (your choice carries over). In Neon UI, the selected server and tabs get a light wave that sweeps back and forth instead of the running light.
+
 ## Server Forge 0.13.2
 
 Bedrock network setup and more reliable linked system status.

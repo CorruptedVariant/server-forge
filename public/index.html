@@ -9,6 +9,7 @@
 <script type="module" src="/appearance.js"></script>
 <script type="module" src="/layout.js"></script>
 <script type="module" src="/app.js"></script>
+<script type="module" src="/ai.js"></script>
 </head>
 <body>
 
@@ -57,6 +58,7 @@
       </div>
       <button class="small update-pill" id="btnAppUpdate" hidden title="A new version of Server Forge is out">⬆ Update available</button>
       <span class="muted" id="whoami"></span>
+      <button class="ghost small" id="btnAi" hidden title="SF Assistant: Claude or ChatGPT helping you manage your servers">✦ AI</button>
       <button class="ghost small" id="btnHelp" title="About Server Forge, report a problem">Help</button>
       <button class="ghost small" data-global="users.manage|panel.settings|audit.view" id="btnSettings">Settings</button>
       <button class="ghost small" id="btnAccount">Account</button>
@@ -78,9 +80,9 @@
       <div class="theme-corner">
         <div class="appearance-tools">
         <button type="button" class="theme-btn" id="btnTheme" title="Change colours" aria-label="Change colours" aria-expanded="false"></button>
-          <button type="button" class="small appearance-button" id="panelAppearance" aria-pressed="false" title="Switch to Fancy UI">
+          <button type="button" class="small appearance-button" id="panelAppearance" aria-pressed="false" title="Switch to Neon UI">
             <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5L12 3ZM20 2v4M18 4h4"/></svg>
-            <span id="panelAppearanceLabel">Basic UI</span>
+            <span id="panelAppearanceLabel">Classic UI</span>
           </button>
         </div>
         <span class="credit" title="Server Forge's first user, and the tester who has helped shape it from the start. Thank you!">🍺 Special thanks to <b>Smart74</b>, first user &amp; tester</span>
@@ -90,8 +92,8 @@
           <div class="theme-swatches" id="themeSwatches"></div>
           <button type="button" class="small ghost" id="themeReset">Reset to default blue</button>
           <div class="appearance-motion">
-            <label class="toggle"><input type="checkbox" id="panelMotion"> Animate Fancy UI</label>
-            <p class="muted small-text" id="appearanceStatus" role="status">Basic UI uses fewer resources.</p>
+            <label class="toggle"><input type="checkbox" id="panelMotion"> Animate Neon UI</label>
+            <p class="muted small-text" id="appearanceStatus" role="status">Classic UI uses fewer resources.</p>
           </div>
         </div>
       </div>
@@ -114,6 +116,16 @@
       </div>
 
       <div id="serverView" hidden>
+        <section class="server-update" id="svUpdate" aria-labelledby="svUpdateTitle" hidden>
+          <div class="server-update-heading">
+            <strong id="svUpdateTitle">Updating game server</strong>
+            <span id="svUpdatePercent"></span>
+          </div>
+          <div class="server-update-track" id="svUpdateTrack" role="progressbar" aria-labelledby="svUpdateTitle" aria-describedby="svUpdateStep">
+            <span id="svUpdateFill"></span>
+          </div>
+          <p id="svUpdateStep"></p>
+        </section>
         <div class="server-head">
           <span id="svIcon"></span>
           <div>
@@ -432,6 +444,29 @@
             </div>
             <p class="muted small-text">Manual backups and the safety copies made before a restore are never deleted automatically.</p>
           </section>
+          <section class="card" id="masterCard" hidden>
+            <div class="backup-head">
+              <div>
+                <h3>Copies on this panel's system <span class="count" id="masterCount"></span></h3>
+                <p class="muted small-text" id="masterHint"></p>
+              </div>
+              <div class="spacer"></div>
+              <button type="button" class="primary" data-perm="backups.create" id="btnMasterNow">Copy to this system now</button>
+            </div>
+            <p class="job-step" id="masterJob"></p>
+            <div class="schedule-row" data-perm="backups.create">
+              <label for="mbEvery">Copy automatically every</label>
+              <input id="mbEvery" type="number" min="0" max="720" class="port-input">
+              <span class="muted">hours while running (0 = off), keeping the newest</span>
+              <input id="mbKeep" type="number" min="1" max="500" class="port-input">
+              <span class="muted">automatic copies</span>
+              <button type="button" id="btnMasterSchedule">Save</button>
+            </div>
+            <table class="table">
+              <thead><tr><th>When</th><th>Type</th><th>World</th><th>Size</th><th></th></tr></thead>
+              <tbody id="masterRows"></tbody>
+            </table>
+          </section>
           <section class="card" id="copiesCard" hidden>
             <h3>Copies on another drive <span class="count" id="copyCount"></span></h3>
             <p class="muted small-text" id="copiesHint"></p>
@@ -682,12 +717,221 @@
           </section>
         </div>
       </div>
+      <div id="aiView" hidden>
+        <div class="server-head">
+          <div class="server-title">SF Assistant</div>
+          <div class="tabs ai-tabs" id="aiTabs">
+            <button class="tab active" data-aitab="chat">Assistant</button>
+            <button class="tab" data-aitab="helper" data-aimanage>Player helper</button>
+            <button class="tab" data-aitab="accounts" data-aimanage>Accounts &amp; limits</button>
+          </div>
+          <div class="spacer"></div>
+          <button class="ghost" id="btnCloseAi">Back to servers</button>
+        </div>
+
+        <div id="aiOff" class="card" hidden>
+          <h3>AI features are off</h3>
+          <p class="muted" id="aiOffText">The owner can turn them on in Settings → AI.</p>
+          <button class="primary" id="btnAiTurnOn" hidden>Turn AI features on</button>
+        </div>
+
+        <!-- Assistant: sessions on the left, the chat on the right -->
+        <div id="aiChatPane" class="ai-pane">
+          <div class="ai-sessions">
+            <button class="primary small" id="btnAiNew">+ New chat</button>
+            <div id="aiSessionList" class="ai-session-list"></div>
+          </div>
+          <div class="ai-chat">
+            <div class="ai-chat-head" id="aiChatHead" hidden>
+              <input id="aiTitle" class="ai-title" maxlength="80" aria-label="Session name">
+              <label class="ai-field">AI <select id="aiAccount"></select></label>
+              <label class="ai-field">Model <select id="aiModel"></select></label>
+              <label class="ai-field">Effort <select id="aiEffort"><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select></label>
+              <label class="ai-field" title="The server this chat works on. The AI is told which server and folder it is working in.">Working on <select id="aiServer"></select></label>
+              <span class="spacer"></span>
+              <button class="small" id="btnAiClear" title="The AI forgets this conversation and starts fresh (the chat stays on screen)">Clear context</button>
+              <button class="small red ghost" id="btnAiDelete">Delete</button>
+            </div>
+            <div class="ai-messages" id="aiMessages">
+              <div class="ai-empty muted" id="aiEmpty">Start a new chat. The AI can only use Server Forge itself, with your permissions: it can read consoles, files and settings, run commands, and start or stop servers you're allowed to.</div>
+            </div>
+            <div class="ai-limits muted small-text" id="aiLimits"></div>
+            <form class="ai-input" id="aiForm" hidden>
+              <textarea id="aiText" rows="2" placeholder="Ask about your servers, or tell the AI what to do… (Enter to send, Shift+Enter for a new line)"></textarea>
+              <div class="ai-input-buttons">
+                <button class="primary" id="btnAiSend" type="submit">Send</button>
+                <button class="red" id="btnAiStop" type="button" hidden>Stop</button>
+              </div>
+            </form>
+          </div>
+        </div>
+
+        <!-- Player helper (Bedrock): a port of AIDA's server helper -->
+        <div id="aiHelperPane" hidden>
+          <section class="card">
+            <h3>Player helper</h3>
+            <p class="muted">Players put the trigger word in chat (in capitals) to ask the AI about the server. Answers are sent privately to whoever asked. The AI gets no tools: it can only reply, read the documents you give it, or ask for a console command, and Server Forge checks every command against fixed rules. Staff are checked live (Xbox ID, staff tag, operator) before they get more. Minecraft Bedrock servers on this system, with the chat relay on.</p>
+            <div class="with-button"><label class="ai-field">Server <select id="hlpServer"></select></label></div>
+          </section>
+          <div id="hlpBody" hidden>
+            <section class="card">
+              <div class="btn-row"><label class="toggle"><input type="checkbox" id="hlpEnabled"> Helper on for this server</label> <span class="hlp-status" id="hlpStatus"></span></div>
+              <div class="hlp-stats muted small-text" id="hlpStats"></div>
+              <div class="hlp-pending small-text" id="hlpPending"></div>
+            </section>
+            <section class="card">
+              <h3>AI and limits</h3>
+              <div class="ai-grid">
+                <label>Main account <select id="hlpAccount"></select></label>
+                <label>Model <select id="hlpModel"></select></label>
+                <label>Effort <select id="hlpEffort"><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select></label>
+                <label>Backup account <select id="hlpBkAccount"></select></label>
+                <label>Backup model <select id="hlpBkModel"></select></label>
+                <label>Stop at 5-hour usage % <input type="number" id="hlpMax5" min="1" max="100"></label>
+                <label>Stop at weekly usage % <input type="number" id="hlpMaxW" min="1" max="100"></label>
+                <label>Trigger word <input id="hlpTrigger" maxlength="16"></label>
+                <label>Helper's name <input id="hlpName" maxlength="24"></label>
+                <label>Seconds between questions <input type="number" id="hlpCooldown" min="5" max="600"></label>
+              </div>
+              <div id="hlpUsage" class="hlp-usage"></div>
+              <button class="primary" id="hlpSave">Save</button>
+            </section>
+            <section class="card">
+              <h3>Staff</h3>
+              <p class="muted small-text">One per line: <code>Gamertag, Xbox ID (XUID), full or read, Role</code>. Full staff can have the helper run commands (each confirmed with a one-time code) only while they are an operator in permissions.json. Everyone else is a player. Staff also need one of these tags in game:</p>
+              <div class="with-button"><input id="hlpTags" placeholder="staff, admin, owner"></div>
+              <textarea id="hlpStaff" rows="4" class="mono" placeholder="Steve, 2533274900000000, full, Owner"></textarea>
+              <h4>Facts about the people here</h4>
+              <textarea id="hlpFacts" rows="3" placeholder="One per line, e.g. Steve owns the server."></textarea>
+              <details class="hlp-discord">
+                <summary>Questions from Discord (through a relay bot's Server Forge API key)</summary>
+                <div class="ai-grid">
+                  <label>Relay bot's API key id <input id="hlpDcKey" placeholder="key id from Settings → API keys"></label>
+                  <label>Owner Discord ids (no restrictions) <input id="hlpDcOwners" placeholder="123456789012345678, …"></label>
+                </div>
+                <label class="small-text">Staff Discord links (<code>discord id = gamertag</code>, one per line)</label>
+                <textarea id="hlpDcStaff" rows="3" class="mono"></textarea>
+                <div class="muted small-text">Recent Discord askers: <span id="hlpDcSeen">none yet</span></div>
+              </details>
+              <div class="btn-row"><button class="primary" id="hlpSaveStaff">Save staff</button>
+                <input id="hlpCheckWho" placeholder="Gamertag" class="short-input"><button class="small" id="hlpCheckGo">Check access now</button><span class="small-text" id="hlpCheckOut"></span></div>
+            </section>
+            <section class="card">
+              <h3>Personality and replies</h3>
+              <p class="muted small-text">How your helper talks to players and how it reacts when someone is rude. This shapes <i>how</i> it says things only: what it may share and which commands it may run stay fixed by the rules above, and some limits always apply (no slurs, nothing about who someone is, no real threats, and it drops any act if someone sounds genuinely upset).</p>
+              <label class="small-text" for="hlpPersonality">Personality</label>
+              <div class="btn-row small-text"><span class="muted">Start from:</span>
+                <button type="button" class="small ghost" data-persona="friendly">Friendly guide</button>
+                <button type="button" class="small ghost" data-persona="sassy">Sassy</button>
+                <button type="button" class="small ghost" data-persona="pirate">Pirate</button>
+                <button type="button" class="small ghost" data-persona="formal">Formal staff</button>
+              </div>
+              <textarea id="hlpPersonality" rows="3" maxlength="1500" placeholder="Empty = warm, patient and helpful. E.g. You're Forge, the server's grumpy old blacksmith. Short sentences, dry humour, secretly happy to help."></textarea>
+              <div class="ai-grid">
+                <label>When a player is rude to it <select id="hlpRude"></select></label>
+                <label>Longest reply (characters) <input type="number" id="hlpMaxChars" min="80" max="450"></label>
+              </div>
+              <div class="hlp-toggles">
+                <label class="toggle" id="hlpRoastSwearRow"><input type="checkbox" id="hlpRoastSwear"> Swearing allowed in comebacks</label>
+                <label class="toggle"><input type="checkbox" id="hlpListAddons"> Tell it which add-ons are switched on (names and descriptions)</label>
+              </div>
+              <label class="small-text" for="hlpRudeNotes">Your own notes for rude players (optional)</label>
+              <textarea id="hlpRudeNotes" rows="2" maxlength="600" placeholder="E.g. Regulars joke around a lot; newcomers get the polite version. Steve is always fair game."></textarea>
+              <label class="small-text" for="hlpReplyRules">Reply rules (optional)</label>
+              <textarea id="hlpReplyRules" rows="2" maxlength="1000" placeholder="E.g. Answer in the language the player wrote in. Mention /spawn when someone is lost. End with a short sign-off."></textarea>
+              <div class="btn-row"><button class="primary" id="hlpSaveStyle">Save personality</button><span class="muted small-text">Try it out in "Try it" below, e.g. ask "you suck".</span></div>
+            </section>
+            <section class="card">
+              <div class="backup-head">
+                <div>
+                  <h3>Knowledge <span class="count" id="hlpDocCount"></span></h3>
+                  <p class="muted small-text">Documents the helper reads before answering: how your add-ons, ranks, menus, rules and events work. <b>Public</b> ones are for everyone; <b>Staff only</b> ones only for verified staff. One topic per document works best (a title line starting with <code>#</code>, then a one-line summary): the helper sees every title and summary and opens the ones it needs.</p>
+                </div>
+                <div class="spacer"></div>
+                <button type="button" class="ghost" id="hlpDocUpload">Upload .md / .txt</button>
+                <input type="file" id="hlpDocFiles" accept=".md,.txt,text/plain,text/markdown" multiple hidden>
+                <button type="button" class="primary" id="hlpDocNew">New document</button>
+              </div>
+              <table class="table">
+                <thead><tr><th>Document</th><th>Who can read it</th><th>Size</th><th>Updated</th><th></th></tr></thead>
+                <tbody id="hlpDocs"></tbody>
+              </table>
+              <div id="hlpDocEditor" hidden>
+                <h4 id="hlpDocEditTitle">New document</h4>
+                <div class="ai-grid">
+                  <label>Name <input id="hlpDocName" maxlength="60" placeholder="Homes"></label>
+                  <label>Who may read it <select id="hlpDocLevel"><option value="public">Public (everyone)</option><option value="staff">Staff only</option></select></label>
+                </div>
+                <textarea id="hlpDocText" rows="12" class="mono" placeholder="# Homes&#10;How players save and go back to their homes.&#10;&#10;- /home set &lt;name&gt; saves where you stand (3 homes, 6 for VIP).&#10;- /home &lt;name&gt; takes you there (10 s warm-up, cancelled if you move)."></textarea>
+                <div class="btn-row"><button class="primary" id="hlpDocSave">Save document</button><button type="button" class="ghost" id="hlpDocCancel">Cancel</button><span class="small-text" id="hlpDocChars"></span></div>
+              </div>
+            </section>
+            <section class="card">
+              <h3>Try it</h3>
+              <p class="muted small-text">Asks the AI as if a player had, with the same checks. Nothing is sent to the game and no command runs.</p>
+              <div class="ai-grid">
+                <label>Asked by <input id="hlpTestWho" value="TestPlayer"></label>
+                <label>As <select id="hlpTestLevel"><option value="player">Player</option><option value="read">Staff (read-only)</option><option value="full">Staff (full)</option><option value="owner">Owner (Discord)</option></select></label>
+                <label>Account <select id="hlpTestEngine"><option value="">Main, then backup</option><option value="main">Main only</option><option value="backup">Backup only</option></select></label>
+                <label>Their tags <input id="hlpTestTags" placeholder="optional, comma separated"></label>
+              </div>
+              <div class="with-button"><input id="hlpTestQ" placeholder="how do I set a home?"><button class="primary" id="hlpTestGo">Ask</button></div>
+              <pre class="hlp-test-out" id="hlpTestOut" hidden></pre>
+            </section>
+            <section class="card">
+              <h3>Activity <label class="toggle small-text"><input type="checkbox" id="hlpOnlyAlerts"> Only alerts and refusals</label></h3>
+              <div class="hlp-log" id="hlpLog"></div>
+            </section>
+          </div>
+        </div>
+
+        <!-- Accounts, limits, and connecting other AI apps -->
+        <div id="aiAccountsPane" hidden>
+          <section class="card">
+            <h3>AI features</h3>
+            <label class="toggle"><input type="checkbox" id="aiEnabled"> AI features on (the SF Assistant and the player helper)</label>
+            <div class="ai-grid">
+              <label>Who may use the assistant <select id="aiWho"><option value="admins">Admins (Panel settings permission)</option><option value="everyone">Everyone signed in</option></select></label>
+              <label>Pause an account at 5-hour usage % <input type="number" id="aiMaxShort" min="1" max="100"></label>
+              <label>Pause an account at weekly usage % <input type="number" id="aiMaxLong" min="1" max="100"></label>
+              <label>Default account for new chats <select id="aiDefault"></select></label>
+            </div>
+            <button class="primary" id="btnAiSaveSettings">Save</button>
+            <p class="muted small-text">The assistant always acts with the permissions of the person chatting. Its AI has no tools of its own: no shell, no files outside Server Forge, no web.</p>
+          </section>
+          <section class="card">
+            <h3>Accounts</h3>
+            <p class="muted small-text" id="aiEngineNote"></p>
+            <div id="aiAccountList" class="ai-account-list"></div>
+            <div class="btn-row">
+              <button class="primary" id="btnAddClaude">Sign in with Claude</button>
+              <button class="primary" id="btnAddChatgpt">Sign in with ChatGPT</button>
+              <button class="small" id="btnAddClaudeSys">Use this system's Claude Code sign-in</button>
+              <button class="small" id="btnAddCodexSys">Use this system's Codex sign-in</button>
+            </div>
+            <p class="muted small-text">Signing in opens the Claude or ChatGPT website in a browser on the system running Server Forge, the same way AIDA does. Server Forge never sees your password or tokens; Claude Code and Codex keep them.</p>
+          </section>
+          <section class="card">
+            <h3>Connect other AI apps (MCP)</h3>
+            <p class="muted">Claude Desktop, Claude Code, ChatGPT/Codex, AIDA and other apps that support MCP can manage your servers through Server Forge. Make an API key in Settings → API keys with only the permissions the AI should have, then add this as a remote MCP server with the header <code>Authorization: Bearer &lt;your key&gt;</code>:</p>
+            <div class="addr" id="aiMcpUrl"></div>
+            <pre class="mono small-text" id="aiMcpExample"></pre>
+          </section>
+        </div>
+      </div>
+
       <div id="settingsView" hidden>
         <div class="server-head">
           <div class="server-title">Panel settings</div>
           <div class="spacer"></div>
           <button class="ghost" id="btnCloseSettings">Back to servers</button>
         </div>
+
+        <section class="card" data-global="panel.settings" id="aiSettingsCard">
+          <h3>AI</h3>
+          <p class="muted">Lets Claude or ChatGPT help from inside Server Forge (the SF Assistant), answer players' questions in game (the player helper), and lets other AI apps connect over MCP. Off until you turn it on.</p>
+          <div class="btn-row"><label class="toggle"><input type="checkbox" id="aiSettingsToggle"> AI features on</label><button class="small" id="btnAiOpenFromSettings">Open AI settings</button></div>
+        </section>
 
 
 

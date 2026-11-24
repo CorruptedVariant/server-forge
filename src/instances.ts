@@ -143,12 +143,22 @@ export function lanAddress(): string {
   return all.find((a) => /^192\.168\./.test(a)) ?? all.find((a) => /^10\.|^172\.(1[6-9]|2\d|3[01])\./.test(a)) ?? all[0] ?? '127.0.0.1';
 }
 
+const UPDATE_STEPS = {
+  preparing: 'Preparing the update…',
+  stopping: 'Waiting for the server to stop…',
+  backup: 'Backing up the server…',
+  installing: 'Installing the update…',
+  restarting: 'Starting the server again…',
+};
+
 class ServerInstance {
   record: ServerRecord;
   module: GameModule;
   status: Status = 'stopped';
   pid: number | null = null;
   startedAt: number | null = null;
+  /** When the game became ready for players, separate from process launch. */
+  readyAt: number | null = null;
   lastError: string | null = null;
   console: string[] = [];
   private parser: LogParser;
@@ -157,6 +167,16 @@ class ServerInstance {
   private crashTimes: number[] = [];
   private tailTimer: NodeJS.Timeout | null = null;
   private busy = false;
+  private updatePhase: keyof typeof UPDATE_STEPS | null = null;
+
+  get isUpdating() {
+    return this.updatePhase !== null || runningJob(this.id)?.kind === 'update';
+  }
+
+  setUpdatePhase(phase: keyof typeof UPDATE_STEPS | null) {
+    this.updatePhase = phase;
+    events.emit('state', this.id);
+  }
   private readinessProbe = false;
   private nextReadinessProbe = 0;
   /** Runner command pipe and its secret (games with `commands` only). */
@@ -191,6 +211,8 @@ class ServerInstance {
 
   private setStatus(status: Status, error: string | null = this.lastError) {
     this.status = status;
+    if (status === 'running') this.readyAt ??= now();
+    if (status === 'starting' || status === 'stopped' || status === 'crashed') this.readyAt = null;
     this.lastError = error;
     // Nobody is online on a stopped server (closes any open play sessions).
     if (status === 'stopped' || status === 'crashed') {
@@ -457,7 +479,8 @@ class ServerInstance {
     }
   }
 
-  async start(opts: { force?: boolean } = {}) {
+  async start(opts: { force?: boolean; afterUpdate?: boolean } = {}) {
+    if (!opts.afterUpdate && this.isUpdating) throw new Error('Wait for the game update to finish.');
     if (this.busy) throw new Error('Another action is in progress.');
     if (runningJob(this.id)) throw new Error('Wait for the install or update to finish.');
     if (this.pid && isAlive(this.pid)) throw new Error('Server is already running.');
@@ -473,6 +496,7 @@ class ServerInstance {
         throw err;
       }
     }
+    if (!opts.afterUpdate && this.isUpdating) throw new Error('Wait for the game update to finish.');
     this.busy = true;
     try {
       this.module.checkInstall(this.record.installDir);
@@ -606,6 +630,7 @@ class ServerInstance {
   }
 
   async restart(opts: { force?: boolean } = {}) {
+    if (this.isUpdating) throw new Error('Wait for the game update to finish.');
     await this.stop();
     await this.start(opts);
   }
@@ -744,7 +769,7 @@ class ServerInstance {
   }
 
   /** Re-attach to a server that kept running while the panel was down. */
-  async adopt(pid: number, startedAt: number, pipe: string | null = null, token: string | null = null) {
+  async adopt(pid: number, startedAt: number, pipe: string | null = null, token: string | null = null, readyAt?: number | null) {
     const name = await processName(pid);
     // Runner-based servers are tracked by the runner's process: "Tavern Host Runner.exe" (installed app), or this same
     // executable (development, and servers started by versions before the separate runner).
@@ -758,9 +783,11 @@ class ServerInstance {
     this.pipe = pipe;
     this.token = token;
     this.startedAt = startedAt;
+    this.readyAt = readyAt ?? null;
     this.status = 'starting';
     this.readLog();
-    if (this.parser.state().ready) this.status = 'running';
+    // Older runtime entries only stored the launch time. Keep their existing uptime if the log confirms readiness.
+    if (readyAt === undefined && this.parser.state().ready) this.readyAt = startedAt;
     this.note(`Re-attached to running server (PID ${pid}).`);
     this.startWatching();
     events.emit('state', this.id);
@@ -787,6 +814,13 @@ class ServerInstance {
   async snapshot(includeDetails = false) {
     const live = this.parser.state();
     const details = includeDetails && this.module.details ? await this.module.details(this.record) : {};
+    const job = jobsFor(this.id).at(-1) ?? null;
+    const activeJob = job?.status === 'running' ? job : null;
+    const updateJob = activeJob?.kind === 'update' || (activeJob?.kind === 'backup' && this.updatePhase === 'backup')
+      ? activeJob : null;
+    const update = updateJob
+      ? { step: updateJob.kind === 'backup' ? `Backup: ${updateJob.step}` : updateJob.step, progress: updateJob.progress }
+      : this.updatePhase ? { step: UPDATE_STEPS[this.updatePhase], progress: null } : null;
     return {
       id: this.id,
       game: this.record.game,
@@ -801,12 +835,14 @@ class ServerInstance {
       archivedAt: this.record.archivedAt ?? null,
       settings: this.record.settings,
       // Installs/updates/restores make the server unusable meanwhile; a backup doesn't.
-      status: ['install', 'restore'].includes(runningJob(this.id)?.kind ?? '') ? 'installing' : this.status,
+      status: ['install', 'update', 'restore'].includes(activeJob?.kind ?? '') ? 'installing' : this.status,
       pid: this.pid,
       startedAt: this.startedAt,
+      readyAt: this.readyAt,
       lastError: this.lastError,
       live,
-      job: jobsFor(this.id).at(-1) ?? null,
+      job,
+      update,
       canInstall: !!this.module.install,
       canCommand: this.takesCommands,
       countdown: this.countdown,
@@ -891,7 +927,7 @@ class ServerInstance {
   }
 
   /** Downloads/updates the server software in the background. The server must be stopped. */
-  installSoftware(title: string, opts: { force?: boolean } = {}) {
+  installSoftware(title: string, opts: { force?: boolean; update?: boolean } = {}) {
     if (!this.module.install) throw new Error(`${this.module.name} servers can't be installed or updated automatically yet.`);
     if (this.busy || (this.pid && isAlive(this.pid))) throw new Error('Stop the server first.');
     this.assertNotOwnedElsewhere();
@@ -906,6 +942,7 @@ class ServerInstance {
         this.note(`${title}: done.`);
       },
       (line) => this.pushLine(line),
+      opts.update ? 'update' : 'install',
     );
   }
 
@@ -1004,6 +1041,7 @@ export function assertFolderFree(dir: string) {
 interface RuntimeEntry {
   pid: number;
   startedAt: number;
+  readyAt?: number | null;
   pipe?: string | null;
   token?: string | null;
 }
@@ -1011,7 +1049,7 @@ interface RuntimeEntry {
 function saveRuntime() {
   const runtime: Record<string, RuntimeEntry> = {};
   for (const i of instances.values()) {
-    if (i.pid && i.startedAt) runtime[i.id] = { pid: i.pid, startedAt: i.startedAt, pipe: i.pipe, token: i.token };
+    if (i.pid && i.startedAt) runtime[i.id] = { pid: i.pid, startedAt: i.startedAt, readyAt: i.readyAt, pipe: i.pipe, token: i.token };
   }
   writeJson(RUNTIME_FILE, runtime);
 }
@@ -1036,7 +1074,7 @@ export async function loadInstances() {
   const runtime = readJson<Record<string, RuntimeEntry>>(RUNTIME_FILE, {});
   for (const [id, entry] of Object.entries(runtime)) {
     const inst = instances.get(id);
-    if (inst && isAlive(entry.pid)) await inst.adopt(entry.pid, entry.startedAt, entry.pipe ?? null, entry.token ?? null);
+    if (inst && isAlive(entry.pid)) await inst.adopt(entry.pid, entry.startedAt, entry.pipe ?? null, entry.token ?? null, entry.readyAt);
   }
   saveRuntime();
   publishFolders();

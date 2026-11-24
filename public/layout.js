@@ -1,5 +1,5 @@
 // Resizable server list: drag the line between it and the server page (or focus it and use the arrow keys);
-// double-click puts it back. The width is saved per browser / desktop app, like the colour and Basic/Fancy choice.
+// double-click puts it back. The width is saved per browser / desktop app, like the colour and Classic/Neon choice.
 const KEY = 'sf-sidebar-width';
 const DEFAULT = 260;
 const MIN = 200;

@@ -2,7 +2,7 @@
 import { randomUUID } from 'node:crypto';
 import { events } from './events.ts';
 
-export type JobKind = 'install' | 'backup' | 'restore';
+export type JobKind = 'install' | 'update' | 'backup' | 'restore';
 
 export interface JobInfo {
   id: string;
@@ -65,7 +65,7 @@ export function startJob(serverId: string, title: string, work: (job: Job) => Pr
       emit();
     },
     line(text) {
-      const tagged = `[${kind}] ${text}`;
+      const tagged = `[${kind === 'update' ? 'install' : kind}] ${text}`;
       if (onLine) onLine(tagged);
       else events.emit('line', serverId, tagged);
     },

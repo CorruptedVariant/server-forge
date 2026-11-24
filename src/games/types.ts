@@ -313,6 +313,8 @@ export interface GameModule {
     status(record: ServerRecord): ChatRelayStatus;
     setRelay(record: ServerRecord, on: boolean, moduleVersion?: string): Promise<ChatRelayStatus>;
     sayCommand(text: string): string;
+    /** A message to one player only (null if `player` isn't a valid player name). */
+    whisperCommand?(player: string, text: string): string | null;
   };
   /** Minecraft-style games require accepting the EULA before a new server is created. */
   eula?: { label: string; url: string };

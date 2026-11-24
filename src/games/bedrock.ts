@@ -8,7 +8,7 @@ import { parseTemplate, readProperties, writeProperties, backupFile, type Proper
 import { downloadFile, extractZip, formatBytes } from '../download.ts';
 import { rootDir } from '../store.ts';
 import { readWorldSettings, writeWorldSettings } from './bedrock-world.ts';
-import { chatStatus, setChatRelay, chatSayCommand } from './bedrock-chat.ts';
+import { chatStatus, setChatRelay, chatSayCommand, chatWhisperCommand } from './bedrock-chat.ts';
 import { listPacks, installAddonFile, removePack, setPackEnabled, reorderPacks, packIcon, movePack, getInstallLocation, setInstallLocation, type PackLocation, type PackType } from './bedrock-addons.ts';
 import { checkPackUpdates, installPackUpdate } from './bedrock-updates.ts';
 import { diagnoseBedrock, missingVcDlls } from './bedrock-diagnose.ts';
@@ -514,6 +514,7 @@ export const bedrock: GameModule = {
     status: (record) => chatStatus(record.installDir, levelName(record)),
     setRelay: (record, on, moduleVersion) => setChatRelay(record.installDir, levelName(record), on, moduleVersion),
     sayCommand: chatSayCommand,
+    whisperCommand: chatWhisperCommand,
   },
 
   world: {

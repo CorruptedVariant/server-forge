@@ -24,7 +24,7 @@ import { rootDir, readJson, writeJson, dataPath, isDev } from './store.ts';
 import * as auth from './auth.ts';
 import * as files from './files.ts';
 import * as serverFiles from './server-files.ts';
-import { listBackups, deleteBackup, backupsFolder, getCopySettings, setCopySettings, testCopyFolder, listCopies, copyFolderFor, copyAllToOffsite, bringBackCopy } from './backups.ts';
+import { listBackups, deleteBackup, backupsFolder, getCopySettings, setCopySettings, testCopyFolder, listCopies, copyFolderFor, copyAllToOffsite, bringBackCopy, backupFilePath, addBackupFile } from './backups.ts';
 import { applyRemote, remoteStatus, addFirewallRule, certFingerprint, type RemoteConfig } from './remote.ts';
 import { installFromHexium, ensureHexiumCopy, placeOnServer, adoptManualMods } from './games/valheim-addons.ts';
 import { shareManifest, shareSummary, sharedFile, canShare } from './share.ts';
@@ -55,6 +55,18 @@ import { readChat, recordChat } from './chat.ts';
 import { cloneServer } from './clone.ts';
 import { transferInfo, packPart, beginReceive, receivePart, finishReceive, abortReceive, type TransferPart } from './transfer.ts';
 import { startMove, getMove } from './moves.ts';
+import {
+  listMasterBackups,
+  getSchedule as getMasterSchedule,
+  setSchedule as setMasterSchedule,
+  getStatus as getMasterStatus,
+  masterFolder,
+  overview as masterOverview,
+  pullBackup,
+  masterBackupFile,
+  sendBack,
+  deleteMasterBackup,
+} from './master-backups.ts';
 import { listNodes, addNode, removeNode, renameNode, getNode, nodeJson, nodeRequest, remoteServers, remoteId, parseRemoteId, isRemoteId, startNodes } from './nodes.ts';
 import { checkUpdates, updateInfo, updateGame, startUpdateChecks, updatesSupported, updateKey } from './game-updates.ts';
 import { checkAppUpdate, appUpdateInfo, startAppUpdateChecks } from './app-updates.ts';
@@ -65,6 +77,10 @@ import { supportsWorlds, listWorlds, setActiveWorld, exportWorld, importWorld, d
 import { listAlerts, dismissAlert, startHealthChecks, type Alert } from './health.ts';
 import { vaultState, vaultCall, vaultEvents, vaultUiFile, vaultShim, vaultPage, isViewMethod, UI_FILES as VAULT_UI } from './vault.ts';
 import { worldCheckInfo, checkNow, acceptCurrent, startWorldChecks } from './world-check.ts';
+import { initMcp, handleMcp, assistantTokenPrincipal } from './ai/mcp.ts';
+import * as ai from './ai/assistant.ts';
+import * as aiEngines from './ai/engines.ts';
+import * as aiHelper from './ai/helper.ts';
 import { GAMES, events, loadInstances, listInstances, getInstance, importServer, createNewServer, updateServer, deleteServer, reorderServers } from './instances.ts';
 
 interface PanelConfig {
@@ -238,6 +254,10 @@ events.on('nodes', () => {
 });
 events.on('removed', (id: string) => {
   for (const [res, p] of streams) if (can(p, 'view', id)) res.write(`event: removed\ndata: ${JSON.stringify({ id })}\n\n`);
+});
+events.on('master-backups', (id: string) => {
+  const msg = `event: master-backups\ndata: ${JSON.stringify({ id })}\n\n`;
+  for (const [res, p] of streams) if (can(p, 'view', id)) res.write(msg);
 });
 
 // ---------- routes ----------
@@ -461,7 +481,8 @@ route('POST', '/api/servers/new', async (ctx) => {
 route('POST', '/api/servers/:id/update', async (ctx) => {
   const p = needServer(ctx, 'server.update', ctx.params[0]);
   const inst = getInstance(ctx.params[0]);
-  inst.installSoftware(`Updating ${inst.module.name} server`);
+  if (inst.isUpdating) throw new HttpError(409, 'This server is already updating.');
+  inst.installSoftware(`Updating ${inst.module.name} server`, { update: true });
   audit(p, `started a software update for "${inst.record.name}"`);
   return inst.snapshot();
 });
@@ -676,6 +697,9 @@ for (const action of ['start', 'stop', 'restart', 'kill'] as const) {
     // {"force": true} to skip the world checks (answered with 428 and the reason, so the panel can ask first).
     const body = await readBody(ctx.req);
     const force = !!body.force;
+    if ((action === 'start' || action === 'restart') && inst.isUpdating) {
+      throw new HttpError(409, 'Wait for the game update to finish.');
+    }
     if (action === 'start' && !force) {
       try {
         await inst.preStartCheck();
@@ -1042,7 +1066,7 @@ for (const route_ of ['game-update', 'bedrock-update']) {
     const info = updateInfo(inst);
     if (!force && !info.available) throw new HttpError(409, 'This server is already up to date. Use Force update to reinstall it anyway.');
     // A second click while it's already updating: say so, instead of logging a failed update.
-    if (info.updating) throw new HttpError(409, 'This server is already updating.');
+    if (inst.isUpdating) throw new HttpError(409, 'This server is already updating.');
     updateGame(inst.id, { countdownMinutes: Number(countdownMinutes) || 0, force: !!force }).catch((err) => inst.log(`Update failed: ${(err as Error).message}`));
     audit(p, `${force ? 'forced' : 'started'} the ${inst.module.name} update of "${inst.record.name}" (${info.current ?? 'unknown'} → ${info.latest ?? 'latest'})`);
     return { latest: info.latest, current: info.current };
@@ -1135,7 +1159,9 @@ route('GET', '/api/servers/:id/chat', async (ctx) => {
   return { relay: chat.status(inst.record), running: inst.isRunning, messages: readChat(inst.id, limit) };
 });
 
-// Body: {"message": "...", "name"?: "who (e.g. a Discord user)", "source"?: "where from (e.g. Discord)"}.
+// Body: {"message": "...", "name"?: "who (e.g. a Discord user)", "source"?: "where from (e.g. Discord)",
+// "userId"?: "the sender's id where they wrote it (e.g. a Discord user id)"}. The history also records which API key
+// sent it (byKey), so a reader can trust userId only from the key it expects (e.g. Watcher's).
 route('POST', '/api/servers/:id/chat', async (ctx) => {
   const p = needServer(ctx, 'console.command', ctx.params[0]);
   const { inst, chat } = chatOf(ctx.params[0]);
@@ -1145,9 +1171,35 @@ route('POST', '/api/servers/:id/chat', async (ctx) => {
   if (!text) throw new HttpError(400, 'Type a message first.');
   const name = String(body.name ?? p.name).trim().slice(0, 40) || p.name;
   const via = String(body.source ?? (p.kind === 'apikey' ? p.name : 'Panel')).trim().slice(0, 24) || 'Panel';
+  const userId = /^\d{5,25}$/.test(String(body.userId ?? '')) ? String(body.userId) : undefined;
   await inst.sendCommand(chat.sayCommand(`§9[${via}]§r ${name}: ${text}`));
-  recordChat(inst.id, { t: Date.now(), from: 'panel', name, text, via });
+  recordChat(inst.id, { t: Date.now(), from: 'panel', name, text, via, ...(userId ? { userId } : {}), ...(p.kind === 'apikey' ? { byKey: p.id } : {}) });
   audit(p, `said "${text.slice(0, 100)}" in chat on "${inst.record.name}"`);
+  return {};
+});
+
+// A private message to one player (e.g. AIDA's server helper answering a question). Only that player sees it in game;
+// it's still saved in the chat history and announced like other panel messages, so Watcher mirrors it to Discord.
+// Body: {"to": "<player>", "message": "...", "prefix"?: "§b[AIDA]§r ", "source"?: "AIDA", "discord"?: true}.
+// discord: the person isn't in game (they asked from Discord): only saved and announced, so it reaches Discord alone.
+route('POST', '/api/servers/:id/chat/whisper', async (ctx) => {
+  const p = needServer(ctx, 'console.command', ctx.params[0]);
+  const { inst, chat } = chatOf(ctx.params[0]);
+  if (!chat.whisperCommand) throw new HttpError(404, `${inst.module.name} servers can't message one player yet.`);
+  if (!inst.isRunning) throw new HttpError(409, 'The server is not running.');
+  const body = await readBody(ctx.req);
+  const discordOnly = body.discord === true;
+  const to = String(body.to ?? '').replace(/[\r\n]+/g, ' ').trim().slice(0, 32);
+  const text = String(body.message ?? '').replace(/[\r\n]+/g, ' ').trim().slice(0, 500);
+  if (!text) throw new HttpError(400, 'Type a message first.');
+  if (!to) throw new HttpError(400, 'Say who it is for.');
+  const prefix = String(body.prefix ?? '').replace(/[\r\n]+/g, ' ').slice(0, 40);
+  const command = discordOnly ? null : chat.whisperCommand(to, prefix + text);
+  if (!discordOnly && !command) throw new HttpError(400, 'That is not a player name.');
+  const via = String(body.source ?? (p.kind === 'apikey' ? p.name : 'Panel')).trim().slice(0, 24) || 'Panel';
+  if (command) await inst.sendCommand(command);
+  recordChat(inst.id, { t: Date.now(), from: 'panel', name: `${via} → ${to}`.slice(0, 40), text, via, to });
+  audit(p, `messaged ${to} privately on "${inst.record.name}"`);
   return {};
 });
 
@@ -2143,6 +2195,84 @@ route('POST', '/api/servers/:id/backups/copies/:file/bring-back', async (ctx) =>
   return { backup: info, backups: listBackups(inst.id) };
 });
 
+// ---------- master backups: copies of node servers' backups kept on this system ----------
+
+function needRemote(ctx: Ctx, perm: ServerPerm, id: string): Principal {
+  const p = need(ctx);
+  if (!parseRemoteId(id)) throw new HttpError(400, 'Copies on this system are for servers on linked systems.');
+  if (!can(p, perm, id)) throw new HttpError(403, 'You do not have permission to do that.');
+  return p;
+}
+
+const masterInfo = (id: string) => ({ backups: listMasterBackups(id), schedule: getMasterSchedule(id), status: getMasterStatus(id), folder: masterFolder(id) });
+
+route('GET', '/api/master-backups', async (ctx) => {
+  const p = need(ctx);
+  return { servers: masterOverview().filter((s) => can(p, 'view', s.id)) };
+});
+
+route('GET', '/api/master-backups/:id', async (ctx) => {
+  const id = decodeURIComponent(ctx.params[0]);
+  needRemote(ctx, 'view', id);
+  return masterInfo(id);
+});
+
+// Starts a copy: the node backs the server up, then the zip is downloaded here (progress via "master-backups" events).
+route('POST', '/api/master-backups/:id', async (ctx) => {
+  const id = decodeURIComponent(ctx.params[0]);
+  const p = needRemote(ctx, 'backups.create', id);
+  if (getMasterStatus(id).running) throw new HttpError(409, 'A copy of this server is already being made.');
+  pullBackup(id, 'manual').catch(() => {});
+  audit(p, `started a copy of "${id}" to this system`);
+  return masterInfo(id);
+});
+
+// Body: {"everyHours": 0 (off) | hours, "keep": n}.
+route('PUT', '/api/master-backups/:id/schedule', async (ctx) => {
+  const id = decodeURIComponent(ctx.params[0]);
+  const p = needRemote(ctx, 'backups.create', id);
+  const body = await readBody(ctx.req);
+  const next = wrap(() => setMasterSchedule(id, body ?? {}));
+  audit(p, next.everyHours ? `automatic copies of "${id}" to this system every ${next.everyHours} h, keeping ${next.keep}` : `turned off automatic copies of "${id}" to this system`);
+  return masterInfo(id);
+});
+
+route('GET', '/api/master-backups/:id/:backup/download', async (ctx) => {
+  const id = decodeURIComponent(ctx.params[0]);
+  const p = needRemote(ctx, 'backups.create', id);
+  const found = masterBackupFile(id, ctx.params[1]);
+  if (!found || !existsSync(found.file)) throw new HttpError(404, 'That copy is not there any more.');
+  const name = `${found.info.serverName.replace(/[^\w\- ]/g, '_')} ${found.info.file}`;
+  ctx.res.writeHead(200, {
+    'Content-Type': 'application/zip',
+    'Content-Length': statSync(found.file).size,
+    'Content-Disposition': `attachment; filename="${name.replace(/[^\w.\- ]/g, '_')}"`,
+    'Cache-Control': 'no-store',
+  });
+  await new Promise<void>((resolve) => createReadStream(found.file).on('error', () => resolve()).on('end', resolve).pipe(ctx.res));
+  audit(p, `downloaded the copy ${found.info.file} of "${id}"`);
+  return undefined;
+});
+
+// Sends a copy back to the node, where it's added to the server's own backups (restore it from there).
+route('POST', '/api/master-backups/:id/:backup/send', async (ctx) => {
+  const id = decodeURIComponent(ctx.params[0]);
+  const p = needRemote(ctx, 'backups.restore', id);
+  const r = await sendBack(id, ctx.params[1]).catch((err) => {
+    throw new HttpError((err as { status?: number }).status ?? 502, (err as Error).message);
+  });
+  audit(p, `sent the copy ${r.file} back to "${id}"`);
+  return { ...masterInfo(id), sent: r.file };
+});
+
+route('DELETE', '/api/master-backups/:id/:backup', async (ctx) => {
+  const id = decodeURIComponent(ctx.params[0]);
+  const p = needRemote(ctx, 'backups.delete', id);
+  wrap(() => deleteMasterBackup(id, ctx.params[1]));
+  audit(p, `deleted the copy ${ctx.params[1]} of "${id}" from this system`);
+  return masterInfo(id);
+});
+
 // ---------- backup copies (panel-wide) ----------
 
 route('GET', '/api/settings/backup-copy', async (ctx) => {
@@ -2192,6 +2322,48 @@ route('POST', '/api/servers/:id/backups', async (ctx) => {
   inst.backupNow('manual');
   audit(p, `started a backup of "${inst.record.name}"`);
   return inst.snapshot();
+});
+
+// The backup's zip (a master panel uses this to keep its own copy of a node's backups).
+route('GET', '/api/servers/:id/backups/:backup/download', async (ctx) => {
+  const p = needServerAny(ctx, ['backups.create', 'files.view'], ctx.params[0]);
+  const found = backupFilePath(ctx.params[0], ctx.params[1]);
+  if (!found || !existsSync(found.file)) throw new HttpError(404, 'Backup not found.');
+  ctx.res.writeHead(200, {
+    'Content-Type': 'application/zip',
+    'Content-Length': statSync(found.file).size,
+    'Content-Disposition': `attachment; filename="${found.info.file.replace(/[^\w.\- ]/g, '_')}"`,
+    'Cache-Control': 'no-store',
+  });
+  await new Promise<void>((resolve) => createReadStream(found.file).on('error', () => resolve()).on('end', resolve).pipe(ctx.res));
+  audit(p, `downloaded backup ${found.info.file} of "${getInstance(ctx.params[0]).record.name}"`);
+  return undefined;
+});
+
+// A backup zip sent here (e.g. a master panel's copy sent back): the body is the zip; X-Filename, X-Backup-Created,
+// X-Backup-World and X-Backup-Live describe it. It's added to the server's backups, ready to restore.
+route('POST', '/api/servers/:id/backups/upload', async (ctx) => {
+  const p = needServer(ctx, 'backups.restore', ctx.params[0]);
+  const inst = getInstance(ctx.params[0]);
+  const tmpDir = path.join(os.tmpdir(), `tavernhost-backup-in-${randomBytes(6).toString('hex')}`);
+  mkdirSync(tmpDir, { recursive: true });
+  const tmp = path.join(tmpDir, 'backup.zip');
+  try {
+    const out = createWriteStream(tmp);
+    for await (const chunk of ctx.req) if (!out.write(chunk)) await new Promise((r) => out.once('drain', r));
+    await new Promise<void>((resolve, reject) => out.end((err?: Error | null) => (err ? reject(err) : resolve())));
+    const fd = openSync(tmp, 'r');
+    const head = Buffer.alloc(2);
+    readSync(fd, head, 0, 2, 0);
+    closeSync(fd);
+    if (head.toString('latin1') !== 'PK') throw new HttpError(400, "That isn't a backup zip.");
+    const h = (name: string) => (ctx.req.headers[name] ? decodeURIComponent(String(ctx.req.headers[name])) : undefined);
+    const info = await addBackupFile(inst.id, tmp, { file: h('x-filename'), createdAt: Number(h('x-backup-created')) || undefined, world: h('x-backup-world') ?? null, live: h('x-backup-live') === '1' });
+    audit(p, `received backup ${info.file} for "${inst.record.name}"`);
+    return { backup: info, backups: listBackups(inst.id) };
+  } finally {
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
 });
 
 route('POST', '/api/servers/:id/backups/:backup/restore', async (ctx) => {
@@ -2564,6 +2736,7 @@ route('GET', '/api/servers/:id/stats', async (ctx) => {
   return {
     running: !!inst.pid && inst.status !== 'stopped' && inst.status !== 'crashed',
     startedAt: inst.startedAt,
+    readyAt: inst.readyAt,
     maxPlayers: inst.module.connection?.(inst.record)?.maxPlayers ?? null,
     range,
     ...serverStats(inst.id, range),
@@ -2984,6 +3157,178 @@ const SECURITY_HEADERS = {
   'Content-Security-Policy': "default-src 'self'; img-src 'self' data: https://media.forgecdn.net https://mc-heads.net; style-src 'self'",
 };
 
+// ---------- AI: accounts, the SF Assistant and the player helper (src/ai/) ----------
+
+const aiManage = (p: Principal) => canGlobal(p, 'panel.settings');
+function needAiManage(ctx: Ctx) {
+  const p = needGlobal(ctx, 'panel.settings');
+  return p;
+}
+function needAiUse(ctx: Ctx) {
+  const p = need(ctx);
+  if (!ai.getSettings().enabled) throw new HttpError(403, 'AI features are off. The owner can turn them on in Settings → AI.');
+  if (!ai.mayUse(p)) throw new HttpError(403, p.kind !== 'user' ? 'The SF Assistant is for signed-in people, not API keys.' : 'The SF Assistant is only for admins on this Server Forge.');
+  return p;
+}
+/** A server as a session's working folder: one this person can see (on this system or a node). */
+function aiServerRef(p: Principal, id: unknown, name?: unknown): ai.ServerRef | null {
+  if (id == null || id === '') return null;
+  const sid = String(id);
+  if (!can(p, 'view', sid)) throw new HttpError(403, "You can't see that server.");
+  if (isRemoteId(sid)) return { id: sid, name: String(name ?? sid).slice(0, 80), dir: null };
+  const inst = getInstance(sid);
+  return { id: sid, name: inst.record.name, dir: inst.record.installDir };
+}
+
+route('GET', '/api/ai', async (ctx) => {
+  const p = need(ctx);
+  const s = ai.getSettings();
+  const manage = aiManage(p);
+  return {
+    enabled: s.enabled,
+    canManage: manage,
+    canUse: ai.mayUse(p),
+    settings: manage ? s : { enabled: s.enabled, defaultAccount: s.defaultAccount },
+    engines: aiEngines.engineInfo(),
+    accounts: s.enabled || manage ? aiEngines.listAccounts().map((a) => (manage ? a : { id: a.id, name: a.name, engine: a.engine, loggedIn: a.loggedIn, limits: a.limits })) : [],
+    models: aiEngines.models(),
+    helpers: manage ? aiHelper.helperSummaries() : [],
+    mcpUrl: '/mcp',
+  };
+});
+
+route('PUT', '/api/ai/settings', async (ctx) => {
+  const p = needAiManage(ctx);
+  const before = ai.getSettings().enabled;
+  const s = ai.setSettings(await readBody(ctx.req));
+  if (before !== s.enabled) {
+    aiHelper.applyAll();
+    audit(p, `turned AI features ${s.enabled ? 'on' : 'off'}`);
+  }
+  return s;
+});
+
+route('POST', '/api/ai/accounts', async (ctx) => {
+  const p = needAiManage(ctx);
+  const b = await readBody(ctx.req);
+  const a = await aiEngines.addAccount({ name: b.name, engine: b.engine, system: !!b.system });
+  audit(p, `added AI account "${a.name}" (${a.engine === 'claude' ? 'Claude' : 'ChatGPT'})`);
+  let signIn = null;
+  if (!b.system) signIn = await aiEngines.login(a.id).catch((err) => ({ error: (err as Error).message }));
+  return { account: aiEngines.accountState(a.id), signIn };
+});
+route('POST', '/api/ai/accounts/:id/login', async (ctx) => {
+  needAiManage(ctx);
+  return aiEngines.login(ctx.params[0]);
+});
+route('POST', '/api/ai/accounts/:id/logout', async (ctx) => {
+  const p = needAiManage(ctx);
+  await aiEngines.logout(ctx.params[0]);
+  audit(p, `signed out AI account ${ctx.params[0]}`);
+  return aiEngines.accountState(ctx.params[0]);
+});
+route('POST', '/api/ai/accounts/:id/refresh', async (ctx) => {
+  needAiManage(ctx);
+  await aiEngines.refreshAccount(ctx.params[0]);
+  return aiEngines.accountState(ctx.params[0]);
+});
+route('PUT', '/api/ai/accounts/:id', async (ctx) => {
+  needAiManage(ctx);
+  aiEngines.renameAccount(ctx.params[0], (await readBody(ctx.req)).name);
+  return aiEngines.accountState(ctx.params[0]);
+});
+route('DELETE', '/api/ai/accounts/:id', async (ctx) => {
+  const p = needAiManage(ctx);
+  await aiEngines.removeAccount(ctx.params[0]);
+  audit(p, `removed AI account ${ctx.params[0]}`);
+  return {};
+});
+
+route('GET', '/api/ai/sessions', async (ctx) => ({ sessions: ai.listSessions(needAiUse(ctx)) }));
+route('POST', '/api/ai/sessions', async (ctx) => {
+  const p = needAiUse(ctx);
+  const b = await readBody(ctx.req);
+  return ai.createSession(p, { title: b.title, accountId: b.accountId, model: b.model, effort: b.effort, server: aiServerRef(p, b.serverId, b.serverName) });
+});
+route('GET', '/api/ai/sessions/:id', async (ctx) => ai.sessionView(needAiUse(ctx), ctx.params[0]));
+route('PUT', '/api/ai/sessions/:id', async (ctx) => {
+  const p = needAiUse(ctx);
+  const b = await readBody(ctx.req);
+  return ai.updateSession(p, ctx.params[0], { title: b.title, accountId: b.accountId, model: b.model, effort: b.effort, ...('serverId' in b ? { server: aiServerRef(p, b.serverId, b.serverName) } : {}) });
+});
+route('DELETE', '/api/ai/sessions/:id', async (ctx) => {
+  ai.deleteSession(needAiUse(ctx), ctx.params[0]);
+  return {};
+});
+route('POST', '/api/ai/sessions/:id/message', async (ctx) => {
+  const p = needAiUse(ctx);
+  const { text } = await readBody(ctx.req);
+  ai.getSession(p, ctx.params[0]);
+  // The answer streams over /api/events (event: ai); this returns as soon as the turn has started.
+  const started = ai.send(p, ctx.params[0], String(text ?? ''));
+  await Promise.race([started, new Promise((r) => setTimeout(r, 300))]);
+  return { started: true };
+});
+route('POST', '/api/ai/sessions/:id/clear', async (ctx) => ai.clearContext(needAiUse(ctx), ctx.params[0]));
+route('POST', '/api/ai/sessions/:id/stop', async (ctx) => {
+  ai.stop(needAiUse(ctx), ctx.params[0]);
+  return {};
+});
+
+// The player helper (Bedrock servers on this system).
+function needHelper(ctx: Ctx) {
+  const p = needAiManage(ctx);
+  if (!can(p, 'console.command', ctx.params[0])) throw new HttpError(403, 'The player helper needs "Send commands" on this server.');
+  return { p, h: aiHelper.helperFor(ctx.params[0]) };
+}
+route('GET', '/api/ai/helper/:id', async (ctx) => needHelper(ctx).h.state());
+route('PUT', '/api/ai/helper/:id', async (ctx) => {
+  const { p, h } = needHelper(ctx);
+  const body = await readBody(ctx.req);
+  const was = h.cfg.enabled;
+  const st = h.update(body);
+  if ('enabled' in body && was !== st.config.enabled) audit(p, `turned the player helper ${st.config.enabled ? 'on' : 'off'} on "${h.serverName}"`);
+  return st;
+});
+route('POST', '/api/ai/helper/:id/test', async (ctx) => needHelper(ctx).h.test(await readBody(ctx.req)));
+route('POST', '/api/ai/helper/:id/verify', async (ctx) => needHelper(ctx).h.verify(String((await readBody(ctx.req)).name ?? '')));
+route('GET', '/api/ai/helper/:id/docs', async (ctx) => {
+  const { h } = needHelper(ctx);
+  return h.readDocFile(String(new URL(ctx.req.url ?? '', 'http://x').searchParams.get('doc') ?? ''));
+});
+route('PUT', '/api/ai/helper/:id/docs', async (ctx) => {
+  const { h } = needHelper(ctx);
+  const b = await readBody(ctx.req);
+  h.saveDoc(b.level === 'staff' ? 'staff' : 'public', b.name, b.content);
+  return h.state();
+});
+route('DELETE', '/api/ai/helper/:id/docs', async (ctx) => {
+  const { h } = needHelper(ctx);
+  h.deleteDoc(String(new URL(ctx.req.url ?? '', 'http://x').searchParams.get('doc') ?? ''));
+  return h.state();
+});
+
+// Live updates: assistant events go only to the session's owner; helper state to people who manage AI.
+ai.bus.on('event', (e: { ownerId: string }) => {
+  const data = `event: ai\ndata: ${JSON.stringify(e)}\n\n`;
+  for (const [res, p] of streams) if (p.kind === 'user' && p.id === e.ownerId) res.write(data);
+});
+aiEngines.events.on('accounts', () => {
+  for (const [res, p] of streams) if (aiManage(p)) res.write('event: ai-accounts\ndata: {}\n\n');
+});
+{
+  const pending = new Set<string>();
+  aiHelper.bus.on('state', (serverId: string) => {
+    if (pending.has(serverId)) return;
+    pending.add(serverId);
+    setTimeout(() => {
+      pending.delete(serverId);
+      const data = `event: ai-helper\ndata: ${JSON.stringify({ serverId })}\n\n`;
+      for (const [res, p] of streams) if (aiManage(p)) res.write(data);
+    }, 300);
+  });
+}
+
 function apiKeyFrom(req: http.IncomingMessage): string | undefined {
   const bearer = /^Bearer\s+(\S+)$/i.exec(String(req.headers.authorization ?? ''));
   return bearer?.[1] ?? (req.headers['x-api-key'] as string | undefined) ?? (req.headers.apikey as string | undefined);
@@ -3009,6 +3354,7 @@ function permFor(method: string, sub: string): { server?: ServerPerm; also?: Ser
     [/^\/command$/, null, 'console.command'],
     [/^\/chat\/relay$/, null, 'addons.manage'],
     [/^\/chat$/, 'console.view', 'console.command'],
+    [/^\/chat\/whisper$/, null, 'console.command'],
     [/^\/players$/, 'view', null],
     [/^\/players\/[^/]+\/action$/, null, 'access.edit'],
     [/^\/(stats|diagnose)/, 'view', 'view'],
@@ -3024,6 +3370,8 @@ function permFor(method: string, sub: string): { server?: ServerPerm; also?: Ser
     [/^\/world-check$/, 'view', 'backups.create'],
     [/^\/backups$/, 'view', 'backups.create'],
     [/^\/backups\/copies\/[^/]+\/bring-back$/, null, 'backups.restore'],
+    [/^\/backups\/upload$/, null, 'backups.restore'],
+    [/^\/backups\/[^/]+\/download$/, 'backups.create', null],
     [/^\/backups\/[^/]+\/restore$/, null, 'backups.restore'],
     [/^\/backups\/[^/]+$/, null, 'backups.delete'],
     [/^\/share/, 'addons.share', 'addons.share'],
@@ -3134,6 +3482,12 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, remot
   }
 
   try {
+    // MCP connector for AI apps (src/ai/mcp.ts): API keys and assistant tokens only, never browser cookies.
+    if (url.pathname === '/mcp') {
+      const key = apiKeyFrom(req);
+      await handleMcp(req, res, key, key ? (auth.apiKeyPrincipal(key) ?? assistantTokenPrincipal(key)) : null);
+      return;
+    }
     if (url.pathname.startsWith('/api/')) {
       let principal: Principal | null = null;
       let user: auth.User | null = null;
@@ -3141,7 +3495,8 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, remot
       const key = apiKeyFrom(req);
       if (key) {
         // API keys (for bots) don't use cookies, so cross-site request forgery doesn't apply to them.
-        principal = auth.apiKeyPrincipal(key);
+        // sfai_ tokens: the SF Assistant's AI acting for a signed-in user (same permissions, expires).
+        principal = auth.apiKeyPrincipal(key) ?? assistantTokenPrincipal(key);
         if (!principal) throw new HttpError(401, 'Invalid API key.');
       } else {
         // Browser changes need our custom header: browsers won't send it cross-site, which blocks CSRF.
@@ -3303,6 +3658,10 @@ async function autoUpdateAddons() {
 setTimeout(() => autoUpdateAddons().catch(() => {}), 10 * 60_000).unref();
 setInterval(() => autoUpdateAddons().catch(() => {}), 6 * 3600_000).unref();
 startNodes();
+initMcp({ port: config.port, version: PANEL_VERSION });
+ai.initAssistant({ port: config.port });
+aiHelper.initHelpers({ enabled: () => ai.getSettings().enabled, servers: () => listInstances().map((i) => ({ id: i.id, name: i.record.name, game: i.record.game })) });
+if (ai.getSettings().enabled) aiEngines.refreshAll().catch(() => {});
 http.createServer(STREAMING_HTTP_OPTIONS, (req, res) => handle(req, res, false)).listen(config.port, '127.0.0.1', () => {
   console.log(`Panel running at http://127.0.0.1:${config.port}`);
 });

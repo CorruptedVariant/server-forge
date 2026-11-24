@@ -1,10 +1,9 @@
 /* ---------- Neon glass (Settings → Appearance), inspired by ADA 0.7.5 ----------
-   Frosted glass panels over deep black, faint twinkling stars and two slow glows behind them; a light runs around the
-   edge of whatever is selected. Only loaded when chosen (appearance.js), after styles.css, so it only restyles:
+   Frosted glass panels over deep black, faint twinkling stars and two slow glows behind them; a wave of light sweeps
+   back and forth across whatever is selected. Only loaded when chosen (appearance.js), after styles.css, so it only restyles:
    layout and ids are unchanged, and Classic never pays for any of it.
    The always-running animations step ~30 times a second rather than every frame, so a high-refresh screen doesn't
    redraw the glass panels at 144-240 Hz just for a slow glow. */
-@property --th-edge { syntax: '<angle>'; inherits: false; initial-value: 0deg; }
 .neon {
   --bg: #07070b; --panel: #101119cf; --panel-2: #1a1b26d9;
   --border: #ffffff1c; --line: #ffffff14; --text: #ecebf2; --muted: #a3a2b4;
@@ -111,6 +110,14 @@
 .neon #serverList a.active:hover { transform: none; }
 .neon #serverList .group-head { border-radius: 8px; margin: 0 8px; width: calc(100% - 16px); padding-left: 8px; padding-right: 8px; }
 .neon #serverList .proxy-children { border-left-color: var(--line); }
+.neon .server-update {
+  border-color: color-mix(in srgb, var(--amber) 65%, transparent);
+  background: color-mix(in srgb, var(--amber) 9%, var(--panel-2));
+  box-shadow: inset 0 0 24px color-mix(in srgb, var(--amber) 8%, transparent);
+}
+.neon .server-update-track, .neon .server-update-rail {
+  box-shadow: 0 0 8px color-mix(in srgb, var(--amber) 40%, transparent);
+}
 .neon .srv-icon.side .dot { border-color: #12131c; box-shadow: 0 0 6px var(--c); }
 
 /* ---------- tabs: quiet until chosen; the chosen one gets the running edge ---------- */
@@ -119,14 +126,37 @@
 .neon .tabs button:hover:not(:disabled), .neon .sub-tabs button:hover:not(:disabled) { background: #ffffff0a; color: var(--text); border-color: transparent; box-shadow: none; }
 .neon .tabs button.active, .neon .sub-tabs button.active { background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--text); border-color: transparent; }
 
-/* ---------- the running edge (selected server, selected tab) ---------- */
-.neon #serverList a.active::before, .neon .tabs button.active::before, .neon .sub-tabs button.active::before {
-  content: ''; position: absolute; inset: 0; border-radius: inherit; padding: 1.5px; pointer-events: none;
-  background: conic-gradient(from var(--th-edge), transparent 0 60%, var(--accent) 75%, #fff3e6 80%, #ff6f6f 85%, transparent 92%);
-  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor; mask-composite: exclude;
-  animation: th-edge 3s steps(90) infinite; transition: opacity .3s;
+/* ---------- the light wave (selected server, selected tab) ----------
+   A band of light sweeps from one end of the item to the other and back, easing as it turns, like a keyboard's wave
+   lighting. ::before draws it along the edge over a dim outline; ::after is a soft wash of the same band inside the item,
+   under the text (isolation keeps it above the item's own background). The band sits in the middle of a gradient three
+   times the item's width, so background-position 80% → 20% carries it from just past the left end to just past the right. */
+.neon #serverList a.active, .neon .tabs button.active, .neon .sub-tabs button.active { isolation: isolate; }
+.neon #serverList a.active::before, .neon .tabs button.active::before, .neon .sub-tabs button.active::before,
+.neon #serverList a.active::after, .neon .tabs button.active::after, .neon .sub-tabs button.active::after {
+  content: ''; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+  background-repeat: no-repeat; background-size: 300% 100%, 100% 100%;
+  animation: th-wave 2.6s steps(8) infinite alternate; transition: opacity .3s;
 }
-@keyframes th-edge { to { --th-edge: 360deg; } }
+.neon #serverList a.active::before, .neon .tabs button.active::before, .neon .sub-tabs button.active::before {
+  padding: 1.5px;
+  background-image:
+    linear-gradient(90deg, transparent 38%, var(--accent) 45%, #fff3e6 50%, var(--accent) 55%, transparent 62%),
+    linear-gradient(color-mix(in srgb, var(--accent) 28%, transparent) 0 0);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor; mask-composite: exclude;
+}
+.neon #serverList a.active::after, .neon .tabs button.active::after, .neon .sub-tabs button.active::after {
+  z-index: -1;
+  background-image: linear-gradient(90deg, transparent 33%, color-mix(in srgb, var(--accent) 38%, transparent) 45%, color-mix(in srgb, #fff3e6 30%, transparent) 50%, color-mix(in srgb, var(--accent) 38%, transparent) 55%, transparent 67%);
+  background-size: 300% 100%;
+}
+/* Eased like a sine (slow at each end, quick through the middle) but stepped ~30 times a second, per the note at the top. */
+@keyframes th-wave {
+  0% { background-position: 80% 0, 0 0; } 10% { background-position: 78.5% 0, 0 0; } 20% { background-position: 74.3% 0, 0 0; }
+  30% { background-position: 67.6% 0, 0 0; } 40% { background-position: 59.3% 0, 0 0; } 50% { background-position: 50% 0, 0 0; }
+  60% { background-position: 40.7% 0, 0 0; } 70% { background-position: 32.4% 0, 0 0; } 80% { background-position: 25.7% 0, 0 0; }
+  90% { background-position: 21.5% 0, 0 0; } 100% { background-position: 20% 0, 0 0; }
+}
 
 /* ---------- cards, rows and chips ---------- */
 .neon .card { border-radius: 16px; border-color: var(--line); background: linear-gradient(180deg, #ffffff07, #ffffff03); box-shadow: inset 0 1px #ffffff07; }
@@ -184,15 +214,18 @@
 @keyframes th-in { from { opacity: 0; transform: translateY(8px); } }
 
 /* ---------- motion settings ---------- */
-/* Window hidden: everything holds still. A running edge frozen mid-lap looks like a stray bar, so it fades out. */
+/* Window hidden: everything holds still. A light wave frozen mid-sweep looks like a stray bar, so it fades out. */
 .neon-paused *, .neon-paused *::before, .neon-paused *::after { animation-play-state: paused !important; }
-.neon-paused #serverList a.active::before, .neon-paused .tabs button.active::before, .neon-paused .sub-tabs button.active::before { opacity: 0; }
+.neon-paused #serverList a.active::before, .neon-paused .tabs button.active::before, .neon-paused .sub-tabs button.active::before,
+.neon-paused #serverList a.active::after, .neon-paused .tabs button.active::after, .neon-paused .sub-tabs button.active::after { opacity: 0; }
 /* "Animate Neon glass effects" off, or the system asks for less motion: no animation; the edge becomes a still outline. */
 .neon-still *, .neon-still *::before, .neon-still *::after { animation: none !important; transition: none !important; }
 .neon-still #serverList a.active::before, .neon-still .tabs button.active::before, .neon-still .sub-tabs button.active::before { background: color-mix(in srgb, var(--accent) 55%, transparent); }
+.neon-still #serverList a.active::after, .neon-still .tabs button.active::after, .neon-still .sub-tabs button.active::after { display: none; }
 @media (prefers-reduced-motion: reduce) {
   .neon *, .neon *::before, .neon *::after { animation: none !important; transition: none !important; }
   .neon #serverList a.active::before, .neon .tabs button.active::before, .neon .sub-tabs button.active::before { background: color-mix(in srgb, var(--accent) 55%, transparent); }
+  .neon #serverList a.active::after, .neon .tabs button.active::after, .neon .sub-tabs button.active::after { display: none; }
 }
 @media (max-width: 700px) { .neon .app { padding: 4px; gap: 4px; } .neon .layout { gap: 4px; } }
 
@@ -212,6 +245,26 @@
 .neon .download-bar.busy i { width: 35%; opacity: 1; animation: download-slide 1.4s ease-in-out infinite alternate; }
 @keyframes download-slide { from { margin-left: 0; } to { margin-left: 65%; } }
 
-/* Archived servers (Fancy): glass banner and a softer divider over the archived list. */
+/* Archived servers (Neon): glass banner and a softer divider over the archived list. */
 .neon #serverList .archived-group { border-top-color: color-mix(in srgb, var(--accent) 22%, transparent); margin-left: 8px; margin-right: 8px; }
 .neon .archived-banner { border-radius: 12px; border-color: color-mix(in srgb, var(--accent) 28%, transparent); background: color-mix(in srgb, var(--panel) 55%, transparent); backdrop-filter: blur(10px); box-shadow: 0 0 18px color-mix(in srgb, var(--accent) 12%, transparent); }
+/* ---------- AI view (Neon): glass on the same layout ---------- */
+.neon .ai-chat { border-radius: 16px; border-color: var(--line); background: linear-gradient(180deg, #ffffff07, #ffffff02); backdrop-filter: var(--glass); box-shadow: inset 0 1px #ffffff09, 0 20px 50px -30px #000; }
+.neon .ai-chat-head, .neon .ai-input { border-color: var(--line); }
+.neon .ai-session { border-radius: 12px; border-color: var(--line); background: #ffffff06; transition: border-color .2s, background .2s, box-shadow .2s; }
+.neon .ai-session:hover { background: #ffffff0c; }
+.neon .ai-session.active { border-color: hsl(var(--hue) 84% 58% / .7); background: hsl(var(--hue) 84% 58% / .10); box-shadow: 0 0 18px -6px hsl(var(--hue) 84% 58% / .7); }
+.neon .ai-bubble { border-radius: 14px; border-color: var(--line); background: #ffffff0a; }
+.neon .ai-msg.user .ai-bubble { background: linear-gradient(135deg, hsl(var(--hue) 85% 45%), hsl(calc(var(--hue) + 30) 85% 45%)); border-color: transparent; box-shadow: 0 6px 22px -10px hsl(var(--hue) 84% 58% / .9); }
+.neon .ai-code, .neon .hlp-test-out, .neon #aiMcpExample { background: var(--well); border-color: var(--line); }
+.neon .ai-account { border-radius: 12px; border-color: var(--line); background: #ffffff06; }
+.neon .ai-limit i { background: var(--well); }
+.neon .ai-limit s { background: linear-gradient(90deg, hsl(var(--hue) 84% 58%), hsl(calc(var(--hue) + 40) 84% 62%)); box-shadow: 0 0 8px hsl(var(--hue) 84% 58% / .6); }
+.neon .ai-limit.over s { background: var(--red); box-shadow: 0 0 8px #ef444499; }
+.neon .hlp-e { border-color: var(--line); }
+.neon .hlp-status.watching { text-shadow: 0 0 10px #22c55e88; }
+.neon:not(.neon-still) .ai-dots i { animation: ai-dot 1.2s infinite ease-in-out; }
+.neon:not(.neon-still) .ai-dots i:nth-child(2) { animation-delay: .15s; }
+.neon:not(.neon-still) .ai-dots i:nth-child(3) { animation-delay: .3s; }
+@keyframes ai-dot { 0%, 80%, 100% { opacity: .3; transform: translateY(0); } 40% { opacity: 1; transform: translateY(-3px); } }
+.neon .ai-table th, .neon .ai-table td { border-color: var(--line); } .neon .ai-table th { background: #ffffff08; }

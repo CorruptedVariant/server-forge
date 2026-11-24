@@ -188,7 +188,7 @@ function onJob(info: JobInfo) {
   if (notifiedJobs.size > 500) notifiedJobs.delete(notifiedJobs.values().next().value!);
   if (info.kind === 'backup' && info.status === 'failed') {
     notify(info.serverId, 'backupFailed', { title: '⚠️ Backup failed', description: clean(info.error ?? ''), color: COLORS.bad });
-  } else if (info.kind === 'install' && /^Updating/.test(info.title)) {
+  } else if (info.kind === 'update') {
     notify(
       info.serverId,
       'updated',

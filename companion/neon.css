@@ -1,8 +1,7 @@
-/* ---------- Fancy UI: the same frosted glass as Server Forge's, fitted to SF Mod Manager's layout ----------
-   Only loaded when chosen (appearance.js), after style.css, so it only restyles and Basic never pays for any of it.
+/* ---------- Neon UI: the same frosted glass as Server Forge's, fitted to SF Mod Manager's layout ----------
+   Only loaded when chosen (appearance.js), after style.css, so it only restyles and Classic never pays for any of it.
    The always-running animations step ~30 times a second rather than every frame, so a high-refresh screen doesn't
    redraw the glass just for a slow glow. Star Valor mode keeps Achilles' own colours (style.css). */
-@property --th-edge { syntax: '<angle>'; inherits: false; initial-value: 0deg; }
 .neon {
   --bg: #07070b; --panel: #101119cf; --panel-2: #ffffff08;
   --border: #ffffff1c; --line: #ffffff14; --text: #ecebf2; --muted: #a3a2b4;
@@ -87,19 +86,40 @@
 .neon .game-tabs button { border: 1px solid transparent; background: transparent; color: var(--muted); position: relative; box-shadow: none; }
 .neon .game-tabs button:hover:not(:disabled) { background: #ffffff0a; color: var(--text); border-color: transparent; box-shadow: none; }
 .neon .game-tabs button.active { background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--text); border-color: transparent; }
-.neon .game-tabs button.active::before, .neon .profile-chip.active::before {
-  content: ''; position: absolute; inset: 0; border-radius: inherit; padding: 1.5px; pointer-events: none;
-  background: conic-gradient(from var(--th-edge), transparent 0 60%, var(--accent) 75%, #fff3e6 80%, #ff6f6f 85%, transparent 92%);
-  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor; mask-composite: exclude;
-  animation: th-edge 3s steps(90) infinite; transition: opacity .3s;
+/* The light wave on the selected game tab and profile, the same as Server Forge's: a band of light sweeps from one end to
+   the other and back along the edge (::before, over a dim outline), with a soft wash of it inside under the text (::after). */
+.neon .game-tabs button.active, .neon .profile-chip.active { isolation: isolate; }
+.neon .game-tabs button.active::before, .neon .profile-chip.active::before,
+.neon .game-tabs button.active::after, .neon .profile-chip.active::after {
+  content: ''; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+  background-repeat: no-repeat; background-size: 300% 100%, 100% 100%;
+  animation: th-wave 2.6s steps(8) infinite alternate; transition: opacity .3s;
 }
-@keyframes th-edge { to { --th-edge: 360deg; } }
+.neon .game-tabs button.active::before, .neon .profile-chip.active::before {
+  padding: 1.5px;
+  background-image:
+    linear-gradient(90deg, transparent 38%, var(--accent) 45%, #fff3e6 50%, var(--accent) 55%, transparent 62%),
+    linear-gradient(color-mix(in srgb, var(--accent) 28%, transparent) 0 0);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor; mask-composite: exclude;
+}
+.neon .game-tabs button.active::after, .neon .profile-chip.active::after {
+  z-index: -1;
+  background-image: linear-gradient(90deg, transparent 33%, color-mix(in srgb, var(--accent) 38%, transparent) 45%, color-mix(in srgb, #fff3e6 30%, transparent) 50%, color-mix(in srgb, var(--accent) 38%, transparent) 55%, transparent 67%);
+  background-size: 300% 100%;
+}
+/* Eased like a sine (slow at each end, quick through the middle) but stepped ~30 times a second, per the note at the top. */
+@keyframes th-wave {
+  0% { background-position: 80% 0, 0 0; } 10% { background-position: 78.5% 0, 0 0; } 20% { background-position: 74.3% 0, 0 0; }
+  30% { background-position: 67.6% 0, 0 0; } 40% { background-position: 59.3% 0, 0 0; } 50% { background-position: 50% 0, 0 0; }
+  60% { background-position: 40.7% 0, 0 0; } 70% { background-position: 32.4% 0, 0 0; } 80% { background-position: 25.7% 0, 0 0; }
+  90% { background-position: 21.5% 0, 0 0; } 100% { background-position: 20% 0, 0 0; }
+}
 /* Star Valor mode: the bar stays in Achilles' colours. */
 .neon body.starvalor-mode { padding: 0; }
 .neon body.starvalor-mode main { border: none; border-radius: 0; background: #0f1420; backdrop-filter: none; box-shadow: none; }
 .neon body.starvalor-mode .game-tabs button { border-radius: 999px; color: #e8ecf4; background: #0f1420; border-color: #2a3348; }
 .neon body.starvalor-mode .game-tabs button.active { background: #e0303f; border-color: #ff5a67; }
-.neon body.starvalor-mode .game-tabs button.active::before { display: none; }
+.neon body.starvalor-mode .game-tabs button.active::before, .neon body.starvalor-mode .game-tabs button.active::after { display: none; }
 
 /* ---------- cards, rows and chips ---------- */
 .neon .card { border-radius: 16px; border-color: var(--line); background: linear-gradient(180deg, #ffffff07, #ffffff03); box-shadow: inset 0 1px #ffffff07; }
@@ -135,12 +155,15 @@
 
 /* ---------- motion settings ---------- */
 .neon-paused *, .neon-paused *::before, .neon-paused *::after { animation-play-state: paused !important; }
-.neon-paused .game-tabs button.active::before, .neon-paused .profile-chip.active::before { opacity: 0; }
+.neon-paused .game-tabs button.active::before, .neon-paused .profile-chip.active::before,
+.neon-paused .game-tabs button.active::after, .neon-paused .profile-chip.active::after { opacity: 0; }
 .neon-still *, .neon-still *::before, .neon-still *::after { animation: none !important; transition: none !important; }
 .neon-still .game-tabs button.active::before, .neon-still .profile-chip.active::before { background: color-mix(in srgb, var(--accent) 55%, transparent); }
+.neon-still .game-tabs button.active::after, .neon-still .profile-chip.active::after { display: none; }
 @media (prefers-reduced-motion: reduce) {
   .neon *, .neon *::before, .neon *::after { animation: none !important; transition: none !important; }
   .neon .game-tabs button.active::before, .neon .profile-chip.active::before { background: color-mix(in srgb, var(--accent) 55%, transparent); }
+  .neon .game-tabs button.active::after, .neon .profile-chip.active::after { display: none; }
 }
 
 /* Mod downloads panel */

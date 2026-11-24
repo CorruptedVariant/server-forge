@@ -1,6 +1,6 @@
 # Tavern Host HTTP API
 
-Reference for Tavern Host 0.13.2. This file is generated from the list in `public/app.js` (the same one the panel shows in Settings → API reference) by `node tools/make-api-docs.mjs`.
+Reference for Tavern Host 0.14.0. This file is generated from the list in `public/app.js` (the same one the panel shows in Settings → API reference) by `node tools/make-api-docs.mjs`.
 
 > Tavern Host is in beta and updates are frequent. Routes can change between versions; check this file for the version you run.
 
@@ -169,6 +169,15 @@ curl -X POST -H "Authorization: Bearer th_…" -H "Content-Type: application/jso
 | `POST /api/servers/{id}/backups/{backup}/restore` | Restore a backup (server stopped) | Restore backups |
 | `DELETE /api/servers/{id}/backups/{backup}` | Delete a backup | Delete backups |
 | `POST /api/servers/{id}/backups/copies/{file}/bring-back` | Copy a backup from the backup copy folder back to this system, so it can be restored | Restore backups |
+| `GET /api/servers/{id}/backups/{backup}/download` | Download a backup zip | Make backups |
+| `POST /api/servers/{id}/backups/upload` | Add a backup zip (body = zip; X-Filename, X-Backup-Created, X-Backup-World, X-Backup-Live headers) | Restore backups |
+| `GET /api/master-backups` | Linked systems' servers with copies on this system (master panel) | See the server |
+| `GET /api/master-backups/{id}` | Copies of a linked system's server kept on this system, schedule and progress | See the server |
+| `POST /api/master-backups/{id}` | Back the linked server up and copy it to this system | Make backups |
+| `PUT /api/master-backups/{id}/schedule` | Automatic copies: {"everyHours": 0 (off) \| n, "keep": n} | Make backups |
+| `GET /api/master-backups/{id}/{backup}/download` | Download a copy | Make backups |
+| `POST /api/master-backups/{id}/{backup}/send` | Send a copy back to the linked system (added to its backups, ready to restore) | Restore backups |
+| `DELETE /api/master-backups/{id}/{backup}` | Delete a copy from this system | Delete backups |
 | `GET /api/servers/{id}/world-check` | World integrity check (Bedrock): last result, missing or regenerated chunks, last good backup | See the server |
 | `POST /api/servers/{id}/world-check` | Check the world now | Make backups |
 | `POST /api/servers/{id}/world-check/accept` | The flagged changes were on purpose: make the world as it is now the reference | Restore backups |

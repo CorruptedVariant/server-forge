@@ -21,8 +21,13 @@ export interface PackInfo {
   id: string;
   uuid: string;
   location: PackLocation;
-  /** The same pack (UUID) is also in the other location. */
+  /** Another installed copy has the same UUID (other location, or another folder, e.g. several builds of one addon). */
   duplicate: boolean;
+  /** What the duplicate means for this copy (which one Bedrock loads), or null. */
+  duplicateText: string | null;
+  /** When this copy's files were put there (manifest time): with several copies, the latest one counts as newest,
+   *  whatever its version number says (a 2.0.0 release can replace 202.200.x betas). */
+  addedAt: number;
   version: number[];
   type: PackType;
   name: string;
@@ -106,6 +111,11 @@ function versionArray(v: unknown): number[] {
 
 export function versionText(v: number[]) {
   return v.join('.');
+}
+
+/** Beta/alpha builds are numbered XXX.XXX.XXX (e.g. 202.200.203); releases X.X.X (e.g. 2.0.0). */
+function isPreRelease(v: number[]) {
+  return v.some((n) => n >= 100);
 }
 
 function compareVersions(a: number[], b: number[]) {
@@ -219,15 +229,21 @@ function folders(installDir: string, level: string, location: PackLocation) {
   return { behavior: path.join(base, 'behavior_packs'), resource: path.join(base, 'resource_packs') };
 }
 
-/** "world:<uuid>" / "server:<uuid>" (a bare UUID matches whichever copy is found first). */
-function parseId(id: string): { location: PackLocation | null; uuid: string } {
-  const m = /^(server|world):(.+)$/.exec(String(id));
-  return m ? { location: m[1] as PackLocation, uuid: m[2].toLowerCase() } : { location: null, uuid: String(id).toLowerCase() };
+/**
+ * "world:<uuid>" / "server:<uuid>"; extra copies with the same UUID add their folder: "server:<uuid>@<folder>".
+ * A bare UUID matches the copy that loads (or whichever is found first).
+ */
+function parseId(id: string): { location: PackLocation | null; uuid: string; folder: string | null } {
+  const m = /^(server|world):([^@]+)(?:@(.+))?$/.exec(String(id));
+  return m ? { location: m[1] as PackLocation, uuid: m[2].toLowerCase(), folder: m[3] ?? null } : { location: null, uuid: String(id).toLowerCase(), folder: null };
 }
 
 function findPack(installDir: string, level: string, id: string): PackInfo {
-  const { location, uuid } = parseId(id);
-  const pack = listPacks(installDir, level).find((p) => p.uuid === uuid && (!location || p.location === location));
+  const { location, uuid, folder } = parseId(id);
+  const list = listPacks(installDir, level);
+  const pack =
+    list.find((p) => p.id === id) ??
+    list.filter((p) => p.uuid === uuid && (!location || p.location === location) && (!folder || p.folder === folder)).sort((a, b) => Number(b.enabled) - Number(a.enabled))[0];
   if (!pack) throw new Error('That pack is not installed.');
   return pack;
 }
@@ -306,10 +322,13 @@ export function listPacks(installDir: string, level: string): PackInfo[] {
   const betaOn = betaApisOn(installDir, level);
   const reg = loadRegistry(installDir);
   const order = { behavior: new Map<string, number>(), resource: new Map<string, number>() };
+  // The version the world asks for: with several copies of one UUID, that's the one Bedrock loads.
+  const wanted = new Map<string, number[]>();
   for (const type of ['behavior', 'resource'] as const) {
     readJsonList(worldListFile(installDir, level, type)).forEach((e, i) => {
       const uuid = String(e.pack_id).toLowerCase();
       if (!order[type].has(uuid)) order[type].set(uuid, i);
+      if (!wanted.has(uuid)) wanted.set(uuid, versionArray(e.version));
     });
   }
   const enabled = new Set([...order.behavior.keys(), ...order.resource.keys()]);
@@ -334,6 +353,8 @@ export function listPacks(installDir: string, level: string): PackInfo[] {
           enabled: enabled.has(m.uuid),
           priority: order[type].get(m.uuid) ?? null,
           duplicate: false,
+          duplicateText: null,
+          addedAt: statSync(path.join(dir, 'manifest.json')).mtimeMs,
           hasIcon: existsSync(path.join(dir, 'pack_icon.png')),
           managed: !!managed,
           installedAt: managed?.installedAt ?? null,
@@ -346,8 +367,46 @@ export function listPacks(installDir: string, level: string): PackInfo[] {
       }
     }
   }
-  for (const p of result) p.duplicate = result.some((q) => q !== p && q.uuid === p.uuid);
+  markDuplicates(result, wanted);
   return result.sort((a, b) => a.name.localeCompare(b.name) || a.location.localeCompare(b.location));
+}
+
+/**
+ * Several installed copies with one UUID (the same pack in both folders, or several builds of one addon side by side):
+ * the world's list has one entry per UUID, so Bedrock loads just one of them: the copy whose version the world asks
+ * for (else the newest). Only that copy shows as on and keeps the plain id; the others get their own ids (with the
+ * folder) so each row can be removed, moved or switched to on its own.
+ */
+function markDuplicates(packs: PackInfo[], wanted: Map<string, number[]>) {
+  const groups = new Map<string, PackInfo[]>();
+  for (const p of packs) groups.set(p.uuid, [...(groups.get(p.uuid) ?? []), p]);
+  const where = (p: PackInfo) => `${p.location === 'world' ? 'world' : 'server'} folder`;
+  for (const [uuid, group] of groups) {
+    if (group.length < 2) continue;
+    const want = wanted.get(uuid);
+    const newestFirst = [...group].sort((a, b) => b.addedAt - a.addedAt);
+    const loaded = (want && group.find((p) => compareVersions(p.version, want) === 0)) || newestFirst[0];
+    const on = loaded.enabled;
+    const sameVersion = group.filter((p) => p !== loaded && compareVersions(p.version, loaded.version) === 0);
+    for (const p of group) {
+      p.duplicate = true;
+      const others = group.filter((q) => q !== p);
+      if (p === loaded) {
+        const list = others.map((q) => `"${q.name}" v${versionText(q.version)} (${where(q)})`).join(', ');
+        p.duplicateText = on
+          ? `This is the copy that loads. Also installed with the same pack ID (kept, not loading): ${list}. Switch one of those on to load it instead.`
+          : `Also installed with the same pack ID: ${list}. Only one of them can be on at a time.`;
+        if (sameVersion.length) p.duplicateText += ' Some copies have the same version number, so Bedrock may pick either: give them different versions.';
+        continue;
+      }
+      p.id = `${p.location}:${uuid}@${p.folder}`;
+      p.enabled = false;
+      p.priority = null;
+      p.duplicateText = on
+        ? `Installed but not loading: "${loaded.name}" v${versionText(loaded.version)} (${where(loaded)}) has the same pack ID and is the copy that loads. Switch this on to load this one instead.`
+        : `Installed but not loading: shares its pack ID with "${loaded.name}" v${versionText(loaded.version)} (${where(loaded)}). Only one of them can be on at a time.`;
+    }
+  }
 }
 
 export function packIcon(installDir: string, level: string, id: string): string | null {
@@ -407,18 +466,26 @@ export function reorderPacks(installDir: string, level: string, type: PackType, 
 
 export function setPackEnabled(installDir: string, level: string, id: string, enabled: boolean) {
   const pack = findPack(installDir, level, id);
+  // A copy that isn't the one loading is already off; switching it "off" mustn't turn off the copy that loads.
+  if (!enabled && !pack.enabled) return;
+  // On: the world asks for this copy's version, so this is the copy Bedrock loads from now on.
   setEnabledIn(installDir, level, pack.type, pack.uuid, enabled ? pack.version : null);
 }
 
 export function removePack(installDir: string, level: string, id: string) {
   const pack = findPack(installDir, level, id);
   rmSync(packDir(installDir, level, pack), { recursive: true, force: true });
+  const left = listPacks(installDir, level).filter((p) => p.uuid === pack.uuid);
   // Only take it out of the world (and forget it) when no other copy is left.
-  if (!listPacks(installDir, level).some((p) => p.uuid === pack.uuid)) {
+  if (!left.length) {
     setEnabledIn(installDir, level, pack.type, pack.uuid, null);
     const reg = loadRegistry(installDir);
     delete reg.packs[pack.uuid];
     saveRegistry(installDir, reg);
+  } else if (pack.enabled) {
+    // The copy that loaded is gone: point the world at the most recently added copy left, keeping its place in the list.
+    const next = left.filter((p) => p.type === pack.type).sort((a, b) => b.addedAt - a.addedAt)[0];
+    if (next) setEnabledIn(installDir, level, pack.type, pack.uuid, next.version);
   }
   return pack;
 }
@@ -475,7 +542,7 @@ export function setUpdateSettings(installDir: string, input: { channel?: unknown
 }
 
 export interface InstallResult {
-  installed: { name: string; type: PackType; version: string; action: 'installed' | 'updated' | 'reinstalled'; location: string }[];
+  installed: { name: string; type: PackType; version: string; action: 'installed' | 'updated' | 'downgraded' | 'replaced' | 'reinstalled'; location: string }[];
   warnings: string[];
   /** UUIDs of the packs in the file (to link them to where they came from). */
   uuids?: string[];
@@ -523,9 +590,31 @@ export async function installAddonFile(installDir: string, level: string, file: 
       if (!m || seen.has(m.uuid)) continue;
       seen.add(m.uuid);
       if (!existsSync(worldDir(installDir, level))) mkdirSync(worldDir(installDir, level), { recursive: true });
-      // Updates replace every existing copy where it is; new packs go to the chosen location.
+      // The upload replaces the copy that's on (the one the world loads), whatever the versions: up, down, release
+      // or beta. If that copy is a beta/alpha build (XXX.XXX.XXX), it's kept first as a switched-off copy, so it can be
+      // switched back to later; a release is simply overwritten. Other kept copies aren't touched, except one with
+      // the very same version as the upload (the same build twice). New packs go to the chosen location.
       const copies = existing.filter((p) => p.uuid === m.uuid);
-      const targets = copies.length ? copies.map((p) => ({ location: p.location, type: p.type, folder: p.folder })) : [{ location: preferred, type: m.type, folder: safeFolderName(m.name, m.uuid) }];
+      const current = copies.find((p) => p.enabled) ?? [...copies].sort((a, b) => b.addedAt - a.addedAt)[0];
+      const targets = current
+        ? [{ location: current.location, type: current.type, folder: current.folder }]
+        : [{ location: preferred, type: m.type, folder: safeFolderName(m.name, m.uuid) }];
+      if (current && isPreRelease(current.version) && compareVersions(current.version, m.version) !== 0) {
+        const keptFolder = `${safeFolderName(current.name, m.uuid)}_v${versionText(current.version)}`;
+        if (keptFolder === current.folder) {
+          // It's already in its kept-name folder: leave it there and put the upload in a folder of its own.
+          targets[0].folder = `${safeFolderName(m.name, m.uuid)}_v${versionText(m.version)}`;
+        } else {
+          const keptDir = packDir(installDir, level, { ...current, folder: keptFolder });
+          rmSync(keptDir, { recursive: true, force: true });
+          cpSync(packDir(installDir, level, current), keptDir, { recursive: true });
+        }
+        result.warnings.push(`Kept the previous build of "${current.name}" (v${versionText(current.version)}) switched off: switch it on in the list to go back to it.`);
+      }
+      for (const other of copies) {
+        if (other === current || compareVersions(other.version, m.version) !== 0) continue;
+        rmSync(packDir(installDir, level, other), { recursive: true, force: true });
+      }
       for (const t of targets) {
         const dest = packDir(installDir, level, t);
         mkdirSync(path.dirname(dest), { recursive: true });
@@ -536,8 +625,9 @@ export async function installAddonFile(installDir: string, level: string, file: 
       // Keep its CurseForge link through updates.
       reg.packs[m.uuid] = { ...reg.packs[m.uuid], installedAt: Date.now(), source };
       (result.uuids ??= []).push(m.uuid);
-      const old = copies[0];
-      const action = !old ? 'installed' : compareVersions(m.version, old.version) > 0 ? 'updated' : 'reinstalled';
+      const old = current;
+      const diff = old ? compareVersions(m.version, old.version) : 0;
+      const action = !old ? 'installed' : diff === 0 ? 'reinstalled' : isPreRelease(m.version) !== isPreRelease(old.version) ? 'replaced' : diff > 0 ? 'updated' : 'downgraded';
       result.installed.push({ name: m.name, type: m.type, version: versionText(m.version), action, location: targets.map((t) => t.location).join(' + ') });
       const server = serverVersion(installDir);
       if (m.minEngine && server && compareVersions(m.minEngine, server) > 0) {

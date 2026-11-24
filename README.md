@@ -21,7 +21,7 @@ Tavern Host is now **Server Forge**, and Tavern Client Mod Manager is now **SF M
 
 New releases include the new installer names and identical legacy-named copies for older automatic updaters. The existing GitHub repository URLs continue to be used during this transition.
 
-**Appearance:** Forge blue is the new default. Server Forge's **Basic / Fancy UI** button beside the colour wheel switches the appearance. Fancy adds frosted panels and animated effects; Basic stays the lightweight default. Existing colour choices are retained.
+**Appearance:** Forge blue is the new default. Server Forge's **Classic / Neon UI** button beside the colour wheel switches the appearance. Neon adds frosted panels and animated effects; Classic stays the lightweight default. Existing colour choices are retained.
 
 ## Downloads
 

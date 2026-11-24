@@ -173,4 +173,15 @@ export function chatSayCommand(text: string) {
   return `tellraw @a ${JSON.stringify({ rawtext: [{ text: clean }] })}`;
 }
 
+/**
+ * A message to one player: tellraw to that name only. Gamertags are letters, digits, spaces and a few symbols, never
+ * quotes, so anything else is refused rather than escaped (a quote would end the selector).
+ */
+export function chatWhisperCommand(player: string, text: string) {
+  const name = String(player ?? '').trim();
+  if (!/^[A-Za-z0-9 _.\-]{1,32}$/.test(name)) return null;
+  const clean = String(text).replace(/[\r\n]+/g, ' ').slice(0, 600);
+  return `tellraw "${name}" ${JSON.stringify({ rawtext: [{ text: clean }] })}`;
+}
+
 export const chatPackInstalled = (installDir: string, level: string) => existsSync(installDir) && listPacks(installDir, level).some((p) => p.uuid === CHAT_PACK_UUID);

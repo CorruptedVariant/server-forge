@@ -415,6 +415,38 @@ export function pruneScheduled(serverId: string, keep: number) {
   return remove.size;
 }
 
+/** A backup's zip on disk (to download it), or null. */
+export function backupFilePath(serverId: string, backupId: string): { file: string; info: BackupInfo } | null {
+  const b = listBackups(serverId).find((x) => x.id === backupId);
+  return b ? { file: path.join(dir(serverId), b.file), info: b } : null;
+}
+
+/**
+ * Adds a backup zip made elsewhere (a master panel sending one of its copies back) to this server's backups, so it
+ * can be restored the normal way. `temp` is moved in.
+ */
+export async function addBackupFile(serverId: string, temp: string, meta: Partial<Pick<BackupInfo, 'createdAt' | 'world' | 'live' | 'file'>>): Promise<BackupInfo> {
+  const folder = backupsFolder(serverId);
+  const list = listBackups(serverId);
+  let file = path.basename(String(meta.file ?? '')).replace(/[^\w.\-]/g, '_');
+  if (!/\.zip$/i.test(file)) file = `${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}-manual.zip`;
+  if (list.some((b) => b.file === file) || existsSync(path.join(folder, file))) file = file.replace(/\.zip$/i, `-${randomUUID().slice(0, 4)}.zip`);
+  await copyFile(temp, path.join(folder, `${file}.part`));
+  await rename(path.join(folder, `${file}.part`), path.join(folder, file));
+  rmSync(temp, { force: true });
+  const info: BackupInfo = {
+    id: randomUUID().slice(0, 8),
+    file,
+    kind: 'manual',
+    createdAt: Number(meta.createdAt) || Date.now(),
+    size: statSync(path.join(folder, file)).size,
+    world: meta.world ?? null,
+    live: !!meta.live,
+  };
+  saveIndex(serverId, [info, ...list]);
+  return info;
+}
+
 /** Unpacks a backup's files into `dest` (used when cloning a running server). */
 export async function extractBackup(serverId: string, backupId: string, dest: string) {
   const b = listBackups(serverId).find((x) => x.id === backupId);

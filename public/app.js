@@ -162,6 +162,30 @@ function el(tag, cls, text) {
   return n;
 }
 
+// What ai.js (the AI view) uses from this page.
+window.sf = {
+  api: (...a) => api(...a),
+  toast: (...a) => toast(...a),
+  el: (...a) => el(...a),
+  ask: (...a) => ask(...a),
+  confirmBox: (...a) => confirmBox(...a),
+  state,
+  hasGlobal: (p) => hasGlobal(p),
+  leaveOtherViews: () => {
+    hideStorage();
+    state.selected = null;
+    renderSidebar();
+    $('serverView').hidden = true;
+    $('emptyState').hidden = true;
+    $('settingsView').hidden = true;
+  },
+  backToServers: () => {
+    $('aiView').hidden = true;
+    if (state.selected) $('serverView').hidden = false;
+    else $('emptyState').hidden = false;
+  },
+};
+
 function duration(ms) {
   const s = Math.max(0, Math.floor(ms / 1000));
   const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
@@ -432,7 +456,9 @@ function connectEvents() {
     state.servers.set(snap.id, snap);
     renderSidebar();
     if (snap.id === state.selected) {
+      const wasUpdating = !!serverUpdate(state.detail);
       state.detail = { ...state.detail, ...snap };
+      if (wasUpdating && !serverUpdate(state.detail) && state.tab === 'settings' && UPDATE_GAMES[snap.game]) loadBedrockUpdate(false);
       renderHeader();
       if (state.tab === 'overview') renderOverview();
     }
@@ -451,10 +477,18 @@ function connectEvents() {
     if (w.phase === 'progress') renderWorldCheckProgress(w.done, w.total);
     else loadBackups();
   });
+  es.addEventListener('master-backups', (e) => {
+    const { id } = JSON.parse(e.data);
+    if (id === state.selected && state.tab === 'backups') loadMasterBackups();
+  });
   es.addEventListener('nodes', () => {
     if (!$('settingsView').hidden) loadNodes();
     refreshPanelName();
   });
+  // AI assistant, accounts and player helper updates, for ai.js.
+  for (const type of ['ai', 'ai-accounts', 'ai-helper']) {
+    es.addEventListener(type, (e) => window.dispatchEvent(new CustomEvent('sf-ai', { detail: { type, data: JSON.parse(e.data) } })));
+  }
   es.addEventListener('chat', (e) => {
     const { id, message } = JSON.parse(e.data);
     if (id === state.selected && state.tab === 'chat') addChatMessage(message, true);
@@ -755,6 +789,7 @@ async function showStorage(nk) {
   $('emptyState').hidden = true;
   $('settingsView').hidden = true;
   $('serverView').hidden = true;
+  $('aiView').hidden = true;
   $('storageView').hidden = false;
   const name = nk === 'local' ? 'This System' : (state.vault?.nodes?.find((n) => n.id === nk)?.name ?? 'Node');
   $('storageTitle').textContent = `Storage · ${name}`;
@@ -814,6 +849,8 @@ $('btnStorageReload').addEventListener('click', () => {
 function hideStorage() {
   state.storage = null;
   $('storageView').hidden = true;
+  // The AI view (ai.js) closes when a server, settings or storage opens.
+  $('aiView').hidden = true;
 }
 
 /** "local" for this system's servers, the node id for servers on other systems. */
@@ -997,11 +1034,29 @@ function enableDrag(a, s, game) {
   });
 }
 
+// Older linked panels report updates as install jobs with an update title.
+function serverUpdate(server) {
+  if (!server || server.status === 'unknown') return null;
+  const job = server.job;
+  return server.update ?? (job?.status === 'running' && job.kind === 'install' && /^Updating\b/.test(job.title) ? job : null);
+}
+
 /** `child`: shown under its BungeeCord proxy ({ proxy, name } = the proxy and its name for this server there). */
 function serverLink(s, game, child = null, archived = false) {
   const a = el('a');
   a.href = `#${s.id}`;
   a.className = `s-${s.status}${s.id === state.selected ? ' active' : ''}${child ? ' proxy-child' : ''}${archived ? ' archived' : ''}`;
+  const update = serverUpdate(s);
+  if (update) {
+    a.classList.add('is-updating');
+    const rail = el('span', 'server-update-rail');
+    rail.setAttribute('aria-hidden', 'true');
+    const fill = el('span');
+    if (update.progress == null) rail.classList.add('indeterminate');
+    else fill.style.height = `${update.progress}%`;
+    rail.appendChild(fill);
+    a.appendChild(rail);
+  }
   // Servers under a proxy follow it; the order is changed by dragging the proxy. Archived ones aren't in the order.
   if (!child && !archived && s.permissions?.includes('settings.edit')) enableDrag(a, s, game);
   // Type icon with the status dot on its corner.
@@ -1021,7 +1076,8 @@ function serverLink(s, game, child = null, archived = false) {
   const via = child ? ` · "${child.name}"` : linked ? ` · via ${linked.proxy.name}` : '';
   const backends = proxyChildren.get(s.id)?.length;
   const count = backends ? ` · ${backends} server${backends === 1 ? '' : 's'}` : '';
-  text.appendChild(el('div', 'sub', archived ? `${kind} · Archived ${new Date(s.archivedAt).toLocaleDateString()}` : `${kind}${count}${via} · ${STATUS_LABEL[s.status]}${players}`));
+  if (update) text.appendChild(el('div', 'server-update-label', update.progress == null ? 'Updating…' : `Updating… ${Math.round(update.progress)}%`));
+  text.appendChild(el('div', 'sub', archived ? `${kind} · Archived ${new Date(s.archivedAt).toLocaleDateString()}` : `${kind}${count}${via}${update ? '' : ` · ${STATUS_LABEL[s.status]}${players}`}`));
   if (linked) a.title = `Behind BungeeCord "${linked.proxy.name}" as "${linked.name}" (${linked.address})`;
   // Mini CPU/RAM view (filled in by updateSidebarStats) for servers that are running.
   if (['running', 'starting', 'stopping'].includes(s.status)) {
@@ -1074,6 +1130,12 @@ async function selectServer(id) {
 
 // ---------- header + controls ----------
 
+function uptimeSince(server) {
+  if (!['running', 'stopping'].includes(server.status)) return null;
+  // Older linked nodes only report the launch time.
+  return server.readyAt === undefined ? server.startedAt : server.readyAt;
+}
+
 function renderHeader() {
   const d = state.detail;
   $('svName').textContent = d.name;
@@ -1085,11 +1147,14 @@ function renderHeader() {
     $('svIcon').dataset.key = iconKeyNow;
   }
   renderConnStrip();
+  const update = serverUpdate(d);
+  renderServerUpdate(update);
   const pill = $('svStatus');
-  pill.className = `pill s-${d.status}`;
-  pill.textContent = STATUS_LABEL[d.status];
+  pill.className = `pill s-${update ? 'updating' : d.status}`;
+  pill.textContent = update ? 'Updating…' : STATUS_LABEL[d.status];
   const meta = [];
-  if (d.startedAt && d.status !== 'stopped') meta.push(`up ${duration(Date.now() - d.startedAt)}`);
+  const upSince = uptimeSince(d);
+  if (upSince) meta.push(`up ${duration(Date.now() - upSince)}`);
   if (d.pid) meta.push(`PID ${d.pid}`);
   meta.push(d.installDir);
   $('svMeta').textContent = meta.join(' · ');
@@ -1104,10 +1169,12 @@ function renderHeader() {
   const archived = !!d.archivedAt;
   $('svArchived').hidden = !archived;
   if (archived) $('svArchivedText').textContent = `Archived ${new Date(d.archivedAt).toLocaleString()}. It's hidden from the server list and can't be started. Its files and backups are kept.`;
-  $('btnStart').disabled = busy || running || archived;
-  $('btnStart').title = archived ? 'Archived: unarchive it to start it' : '';
+  $('btnStart').disabled = busy || running || archived || !!update || d.status === 'unknown';
+  $('btnStart').title = update ? 'Start is available when the update finishes' : archived ? 'Archived: unarchive it to start it' : '';
   $('btnStop').disabled = ['stopped', 'crashed', 'stopping', 'installing'].includes(d.status);
-  $('btnRestart').disabled = busy || archived;
+  $('btnRestart').disabled = busy || archived || !!update || d.status === 'unknown';
+  $('btnUpdateSoftware').disabled = !!update || !['stopped', 'crashed'].includes(d.status);
+  $('btnUpdateSoftware').title = update ? 'Wait for the game update to finish' : $('btnUpdateSoftware').disabled ? 'Stop the server first' : '';
   $('btnArchive').textContent = archived ? 'Unarchive server' : 'Archive server';
   $('archiveTitle').textContent = archived ? 'Unarchive this server' : 'Archive this server';
   $('archiveHelp').textContent = archived
@@ -1116,8 +1183,21 @@ function renderHeader() {
   $('btnCountdown').hidden = !d.canCommand;
   // Moving needs somewhere to move to: another system that can take it (see moveTargets).
   $('btnMove').hidden = !hasGlobal('servers.create') || !moveTargets(d).length;
-  $('btnCountdown').disabled = busy || !running || !!d.countdown;
+  $('btnCountdown').disabled = busy || !running || !!d.countdown || !!update;
   renderCountdown();
+}
+
+function renderServerUpdate(update) {
+  $('svUpdate').hidden = !update;
+  if (!update) return;
+  const track = $('svUpdateTrack');
+  const percent = update.progress == null ? null : Math.round(update.progress);
+  track.classList.toggle('indeterminate', percent === null);
+  if (percent === null) track.removeAttribute('aria-valuenow');
+  else track.setAttribute('aria-valuenow', String(percent));
+  $('svUpdateFill').style.width = percent === null ? '' : `${percent}%`;
+  $('svUpdatePercent').textContent = percent === null ? '' : `${percent}%`;
+  $('svUpdateStep').textContent = update.step;
 }
 
 for (const action of ['start', 'stop', 'restart']) {
@@ -1215,7 +1295,8 @@ function renderConnStrip() {
   const running = d.status === 'running';
   const count = running ? d.live.playerCount ?? 0 : 0;
   strip.appendChild(el('span', 'conn-chip', `👥 ${running ? count : '–'}${c?.maxPlayers ? ` / ${c.maxPlayers}` : ''} online`));
-  if (d.startedAt && ['running', 'starting'].includes(d.status)) strip.appendChild(el('span', 'conn-chip', `⏱ up ${duration(Date.now() - d.startedAt)}`));
+  const upSince = d.status === 'running' ? uptimeSince(d) : null;
+  if (upSince) strip.appendChild(el('span', 'conn-chip', `⏱ up ${duration(Date.now() - upSince)}`));
   if (d.live?.extra?.joinCode && running) strip.appendChild(el('span', 'conn-chip', `🔑 join code ${d.live.extra.joinCode}`));
   if (c?.port) {
     const help = el('button', 'conn-chip copy', '🌐 Port forwarding');
@@ -1339,7 +1420,8 @@ function setTab(tab) {
 function renderJob() {
   const job = state.detail?.job;
   // Show a running job, or a failed one so the error stays visible; hide finished ones after a moment.
-  const show = job && (job.status !== 'done' || Date.now() - (job.finishedAt ?? 0) < 15_000);
+  const show = job && !(job.status === 'running' && serverUpdate(state.detail))
+    && (job.status !== 'done' || Date.now() - (job.finishedAt ?? 0) < 15_000);
   $('jobCard').hidden = !show;
   if (!show) return;
   $('jobTitle').textContent = job.status === 'failed' ? `${job.title} failed` : job.status === 'done' ? `${job.title}: done` : job.title;
@@ -1683,7 +1765,9 @@ async function renderResources() {
   const graph = (id, key, max, stepped) => drawGraph($(id), hist.map((h) => ({ t: h.t, v: h[key] })), max, st.range, st.step, stepped);
 
   // Uptime
-  $('resUptime').textContent = st.running && st.startedAt ? duration(Date.now() - st.startedAt) : 'offline';
+  const status = state.detail?.status;
+  const upSince = uptimeSince({ ...st, status });
+  $('resUptime').textContent = status === 'starting' ? 'Starting…' : st.running && upSince ? duration(Date.now() - upSince) : 'offline';
   const share = drawUptimeStrip($('resUptimeStrip'), hist, st.range, st.step);
   $('resUptimeSub').textContent = `Online ${Math.round(share * 100)}% of the last ${rangeLabel}.`;
   $('resAxisL').textContent = `${rangeLabel} ago`;
@@ -2213,8 +2297,6 @@ function renderSettings() {
   $('profilesCard').hidden = d.game !== 'valheim';
   if (d.game === 'valheim') loadProfiles();
   $('updateCard').hidden = !d.canInstall;
-  $('btnUpdateSoftware').disabled = !['stopped', 'crashed'].includes(d.status);
-  $('btnUpdateSoftware').title = $('btnUpdateSoftware').disabled ? 'Stop the server first' : '';
   // Bedrock and Valheim: version check, "Update now" (works while running, with a countdown) and automatic updates.
   const checked = UPDATE_GAMES[d.game];
   $('bedrockUpdate').hidden = !checked;
@@ -2588,7 +2670,7 @@ $('btnBuForce').addEventListener('click', async () => {
 $('btnUpdateSoftware').addEventListener('click', async () => {
   try {
     await api('POST', `/api/servers/${state.selected}/update`);
-    toast('Updating. Progress is shown on the Overview tab.');
+    toast('Updating. Progress is shown at the top of the server.');
     setTab('overview');
   } catch (err) {
     toast(err.message, true);
@@ -5382,6 +5464,15 @@ const API_DOCS = [
     ['POST', '/api/servers/{id}/backups/{backup}/restore', 'Restore a backup (server stopped)', 'Restore backups'],
     ['DELETE', '/api/servers/{id}/backups/{backup}', 'Delete a backup', 'Delete backups'],
     ['POST', '/api/servers/{id}/backups/copies/{file}/bring-back', 'Copy a backup from the backup copy folder back to this system, so it can be restored', 'Restore backups'],
+    ['GET', '/api/servers/{id}/backups/{backup}/download', 'Download a backup zip', 'Make backups'],
+    ['POST', '/api/servers/{id}/backups/upload', 'Add a backup zip (body = zip; X-Filename, X-Backup-Created, X-Backup-World, X-Backup-Live headers)', 'Restore backups'],
+    ['GET', '/api/master-backups', 'Linked systems\' servers with copies on this system (master panel)', 'See the server'],
+    ['GET', '/api/master-backups/{id}', 'Copies of a linked system\'s server kept on this system, schedule and progress', 'See the server'],
+    ['POST', '/api/master-backups/{id}', 'Back the linked server up and copy it to this system', 'Make backups'],
+    ['PUT', '/api/master-backups/{id}/schedule', 'Automatic copies: {"everyHours": 0 (off) | n, "keep": n}', 'Make backups'],
+    ['GET', '/api/master-backups/{id}/{backup}/download', 'Download a copy', 'Make backups'],
+    ['POST', '/api/master-backups/{id}/{backup}/send', 'Send a copy back to the linked system (added to its backups, ready to restore)', 'Restore backups'],
+    ['DELETE', '/api/master-backups/{id}/{backup}', 'Delete a copy from this system', 'Delete backups'],
     ['GET', '/api/servers/{id}/world-check', 'World integrity check (Bedrock): last result, missing or regenerated chunks, last good backup', 'See the server'],
     ['POST', '/api/servers/{id}/world-check', 'Check the world now', 'Make backups'],
     ['POST', '/api/servers/{id}/world-check/accept', 'The flagged changes were on purpose: make the world as it is now the reference', 'Restore backups'],
@@ -5649,6 +5740,7 @@ async function loadBackups() {
     return toast(err.message, true);
   }
   renderCopies(data);
+  loadMasterBackups();
   backupsShownFor = state.selected;
   backupFolder = data.folder;
   const d = state.detail;
@@ -5722,6 +5814,113 @@ async function loadBackups() {
     body.appendChild(tr);
   }
 }
+
+// ---------- copies of a linked system's server kept on this panel's system (master backups) ----------
+
+async function loadMasterBackups() {
+  const id = state.selected;
+  const card = $('masterCard');
+  // Only for servers on linked systems: local servers' backups are already here.
+  if (!state.detail?.node) {
+    card.hidden = true;
+    return;
+  }
+  let m;
+  try {
+    m = await api('GET', `/api/master-backups/${encodeURIComponent(id)}`);
+  } catch (err) {
+    card.hidden = true;
+    return;
+  }
+  if (id !== state.selected) return;
+  card.hidden = false;
+  const nodeName = state.detail.node.name;
+  $('masterHint').textContent = `"${nodeName}" makes a normal backup, then this panel downloads it and keeps it here (${m.folder}), so the world survives if ${nodeName} fails. Send a copy back to restore it there.`;
+  $('masterCount').textContent = m.backups.length ? `(${m.backups.length})` : '';
+  $('btnMasterNow').disabled = m.status.running;
+  $('masterJob').textContent = m.status.running ? m.status.step ?? 'Working…' : m.status.error ? `⚠ Last copy failed: ${m.status.error}` : '';
+  $('masterJob').classList.toggle('error-text', !m.status.running && !!m.status.error);
+  if (document.activeElement !== $('mbEvery') && document.activeElement !== $('mbKeep')) {
+    $('mbEvery').value = m.schedule.everyHours;
+    $('mbKeep').value = m.schedule.keep;
+  }
+  const body = $('masterRows');
+  body.innerHTML = '';
+  if (!m.backups.length) {
+    const td = el('td', 'muted', 'No copies on this system yet.');
+    td.colSpan = 5;
+    const tr = el('tr');
+    tr.appendChild(td);
+    body.appendChild(tr);
+  }
+  for (const b of m.backups) {
+    const tr = el('tr');
+    const when = el('td', null, `${new Date(b.createdAt).toLocaleString()}${b.live ? ' (while running)' : ''}`);
+    when.title = `Copied here ${new Date(b.copiedAt).toLocaleString()} from ${b.nodeName}\n${b.file}`;
+    tr.appendChild(when);
+    const kind = el('td');
+    kind.appendChild(el('span', `kind ${b.kind}`, KIND_LABEL[b.kind] ?? b.kind));
+    tr.appendChild(kind);
+    tr.appendChild(el('td', null, b.world ?? '—'));
+    tr.appendChild(el('td', null, fmtSize(b.size)));
+    const actions = el('td', 'actions');
+    const dl = el('a', 'small button-like', 'Download');
+    dl.href = `/api/master-backups/${encodeURIComponent(id)}/${b.id}/download`;
+    dl.hidden = !hasPerm('backups.create');
+    const send = el('button', 'small', `Send to ${nodeName}`);
+    send.hidden = !hasPerm('backups.restore');
+    send.disabled = m.status.running;
+    send.title = `Adds this copy to the server's backups on ${nodeName}; restore it from the Backups list above`;
+    send.addEventListener('click', async () => {
+      if (!await confirmBox(`Send the copy from ${new Date(b.createdAt).toLocaleString()} back to ${nodeName}?\n\nIt's added to the server's backups there (nothing is replaced yet). Restore it from the Backups list once it's there.`)) return;
+      send.disabled = true;
+      try {
+        await api('POST', `/api/master-backups/${encodeURIComponent(id)}/${b.id}/send`);
+        toast(`Sent to ${nodeName}: it's in the Backups list now`);
+        loadBackups();
+      } catch (err) {
+        toast(err.message, true);
+        send.disabled = false;
+      }
+    });
+    const del = el('button', 'small red ghost', 'Delete');
+    del.hidden = !hasPerm('backups.delete');
+    del.addEventListener('click', async () => {
+      if (!await confirmBox('Delete this copy from this system permanently? The backups on the server itself are not touched.')) return;
+      try {
+        await api('DELETE', `/api/master-backups/${encodeURIComponent(id)}/${b.id}`);
+        loadMasterBackups();
+      } catch (err) {
+        toast(err.message, true);
+      }
+    });
+    actions.append(dl, document.createTextNode(' '), send, document.createTextNode(' '), del);
+    tr.appendChild(actions);
+    body.appendChild(tr);
+  }
+}
+
+$('btnMasterNow').addEventListener('click', async () => {
+  $('btnMasterNow').disabled = true;
+  try {
+    await api('POST', `/api/master-backups/${encodeURIComponent(state.selected)}`);
+    toast('Copying to this system…');
+    loadMasterBackups();
+  } catch (err) {
+    toast(err.message, true);
+    $('btnMasterNow').disabled = false;
+  }
+});
+
+$('btnMasterSchedule').addEventListener('click', async () => {
+  try {
+    const m = await api('PUT', `/api/master-backups/${encodeURIComponent(state.selected)}/schedule`, { everyHours: Number($('mbEvery').value), keep: Number($('mbKeep').value) });
+    toast(m.schedule.everyHours ? `Copies every ${m.schedule.everyHours} h, keeping ${m.schedule.keep}` : 'Automatic copies off');
+    loadMasterBackups();
+  } catch (err) {
+    toast(err.message, true);
+  }
+});
 
 // ---------- world check (Bedrock) ----------
 
@@ -6814,7 +7013,11 @@ function addonRow(p, compact = false) {
   metaLine.title = [p.uuid ?? p.file, p.source].filter(Boolean).join('\n');
   info.appendChild(metaLine);
   for (const w of p.warnings ?? []) info.appendChild(el('div', `sub ${w.level === 'error' ? 'error-text' : 'warn-text'}`, `${w.level === 'error' ? '⛔' : '⚠'} ${w.text}`));
-  if (p.duplicate) info.appendChild(el('div', 'sub warn-text', 'This pack is in both the server folder and the world folder. Remove one copy so it only loads once.'));
+  if (p.duplicate) {
+    // Several copies share one pack ID: say which folder this one is, so the rows can be told apart.
+    if (p.folder) info.appendChild(el('div', 'sub meta', `Folder: ${p.folder}`));
+    info.appendChild(el('div', 'sub warn-text', p.duplicateText ?? 'This pack is in both the server folder and the world folder. Remove one copy so it only loads once.'));
+  }
   row.appendChild(info);
   const actions = el('div', 'actions');
   // Managed by another tool (Satisfactory Mod Manager): just a link to the mod's page, whose Install button opens SMM.
@@ -6926,7 +7129,7 @@ function addonRow(p, compact = false) {
     const rm = el('button', 'small red ghost', 'Remove');
     rm.addEventListener('click', async () => {
       const msg = p.duplicate
-        ? `Remove the copy of "${p.name}" in the ${locationLabel(p.location).toLowerCase()}? The other copy stays installed.`
+        ? `Remove this copy of "${p.name}" (v${Array.isArray(p.version) ? p.version.join('.') : p.version}, folder ${p.folder}${p.location ? ` in the ${locationLabel(p.location).toLowerCase()}` : ''})? The other copies stay installed.`
         : p.location
           ? `Remove "${p.name}"? Its files are deleted and it's taken out of the world.`
           : `Remove "${p.name}"? The file ${p.file} is deleted from the server.`;
@@ -7004,7 +7207,7 @@ $('nexusForm').addEventListener('submit', async (e) => {
 function showInstallResult(result) {
   const box = el('div', 'result-box');
   const ul = el('ul');
-  for (const p of result.installed) ul.appendChild(el('li', null, `${{ installed: 'Installed', updated: 'Updated', reinstalled: 'Reinstalled' }[p.action.replace('-off', '')] ?? 'Installed'}${p.action.endsWith('-off') ? ' (switched off)' : ''} ${p.name} (${['behavior', 'resource'].includes(p.type) ? `${p.type} pack` : p.type}${p.version ? `, v${p.version}` : ''})`));
+  for (const p of result.installed) ul.appendChild(el('li', null, `${{ installed: 'Installed', updated: 'Updated', downgraded: 'Downgraded', replaced: 'Replaced', reinstalled: 'Reinstalled' }[p.action.replace('-off', '')] ?? 'Installed'}${p.action.endsWith('-off') ? ' (switched off)' : ''} ${p.name} (${['behavior', 'resource'].includes(p.type) ? `${p.type} pack` : p.type}${p.version ? `, v${p.version}` : ''})`));
   box.appendChild(ul);
   for (const w of result.warnings) box.appendChild(el('div', 'warn-banner', w));
   if (result.running) box.appendChild(el('div', 'muted small-text', `Restart the server to load the new ${addonKind === 'plugins' ? 'plugins' : 'packs'}.`));

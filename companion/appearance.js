@@ -1,4 +1,4 @@
-// Basic / Fancy UI, like Server Forge's: the effects and their stylesheet load only after an explicit opt-in.
+// Classic / Neon UI, like Server Forge's: the effects and their stylesheet load only after an explicit opt-in.
 const KEY = 'th-appearance';
 const MOTION = 'th-appearance-motion';
 let style = 'classic';
@@ -32,12 +32,12 @@ function apply(save = false) {
     document.getElementById('neonBackdrop')?.remove();
   }
   button.setAttribute('aria-pressed', String(enabled));
-  button.setAttribute('aria-label', enabled ? 'Fancy UI is on. Switch to Basic UI' : 'Basic UI is on. Switch to Fancy UI');
-  button.title = enabled ? 'Switch to Basic UI (fewer visual effects)' : 'Switch to Fancy UI (more visual effects)';
-  buttonLabel.textContent = enabled ? 'Fancy UI' : 'Basic UI';
+  button.setAttribute('aria-label', enabled ? 'Neon UI is on. Switch to Classic UI' : 'Classic UI is on. Switch to Neon UI');
+  button.title = enabled ? 'Switch to Classic UI (fewer visual effects)' : 'Switch to Neon UI (more visual effects)';
+  buttonLabel.textContent = enabled ? 'Neon UI' : 'Classic UI';
   toggle.checked = motion;
   toggle.disabled = !enabled;
-  status.textContent = enabled ? 'Fancy UI is on.' : 'Basic UI uses fewer resources.';
+  status.textContent = enabled ? 'Neon UI is on.' : 'Classic UI uses fewer resources.';
   if (save) {
     try {
       localStorage.setItem(KEY, style);

@@ -197,7 +197,6 @@ export const updatesSupported = (game: string) => game in SOURCES;
 export const updateKey = (inst: Instance) => (inst.record.game === 'bedrock' && isEndstone(inst.record) ? 'endstone' : inst.record.game);
 
 const latest = new Map<string, { version: string; updated: number | null; checkedAt: number }>();
-const updating = new Set<string>();
 
 export function updateInfo(inst: Instance): UpdateInfo {
   const src = SOURCES[updateKey(inst)];
@@ -216,7 +215,7 @@ export function updateInfo(inst: Instance): UpdateInfo {
     available: !!(l && (current ? src.newer(l.version, current) : true)),
     checkedAt: l?.checkedAt ?? null,
     auto: !!inst.record.autoUpdate,
-    updating: updating.has(inst.id),
+    updating: inst.isUpdating,
   };
 }
 
@@ -238,7 +237,7 @@ export async function checkUpdates(force = false, only?: string) {
       if (updateKey(inst) !== game) continue;
       const info = updateInfo(inst);
       events.emit('game-update', { serverId: inst.id, ...info });
-      if (info.available && inst.record.autoUpdate && !inst.record.archivedAt && !updating.has(inst.id)) {
+      if (info.available && inst.record.autoUpdate && !inst.record.archivedAt && !inst.isUpdating) {
         updateGame(inst.id, { countdownMinutes: 5, auto: true }).catch((err) => inst.log(`Automatic update failed: ${(err as Error).message}`));
       }
     }
@@ -264,15 +263,15 @@ export async function updateGame(serverId: string, opts: { countdownMinutes?: nu
   const inst = getInstance(serverId);
   const src = SOURCES[updateKey(inst)];
   if (!src) throw new Error(`${inst.module.name} servers can't be updated this way.`);
-  if (updating.has(serverId)) throw new Error('This server is already updating.');
-  updating.add(serverId);
-  events.emit('state', serverId);
+  if (inst.isUpdating) throw new Error('This server is already updating.');
+  inst.setUpdatePhase('preparing');
   const target = latest.get(updateKey(inst))?.version;
   const targetLabel = target ? `${src.name} ${inst.record.game === 'valheim' ? `build ${target}` : target}` : `the latest ${src.name} version`;
   try {
     const wasRunning = inst.isRunning;
     inst.log(`${opts.auto ? 'Automatic update' : opts.force ? 'Forced update' : 'Update'} to ${targetLabel} started.`);
     if (wasRunning) {
+      inst.setUpdatePhase('stopping');
       const minutes = Math.max(0, Math.min(Number(opts.countdownMinutes ?? 0), 60));
       if (inst.canAnnounce) {
         const marks = minutes ? [minutes, ...[30, 15, 10, 5, 2, 1].filter((m) => m < minutes)] : [];
@@ -293,20 +292,24 @@ export async function updateGame(serverId: string, opts: { countdownMinutes?: nu
       }
     }
     // A backup first, so the update can be undone.
+    inst.setUpdatePhase('backup');
     const backup = inst.backupNow('manual');
     await waitForJob(serverId, backup.id);
     const before = src.guard?.(inst);
-    const job = inst.installSoftware(`Updating to ${targetLabel}`, { force: opts.force });
+    inst.setUpdatePhase('installing');
+    const job = inst.installSoftware(`Updating to ${targetLabel}`, { force: opts.force, update: true });
     await waitForJob(serverId, job.id);
     if (target) src.installed?.(inst, target);
     if (src.guard) inst.log(src.guard(inst) !== before ? "Note: the world's addon lists changed during the update; check the Addons tab." : 'All addons are still switched on.');
-    if (wasRunning) await inst.start();
+    if (wasRunning) {
+      inst.setUpdatePhase('restarting');
+      await inst.start({ afterUpdate: true });
+    }
     inst.log(`Updated to ${targetLabel}.`);
     events.emit('game-update', { serverId, ...updateInfo(inst) });
     return { cancelled: false };
   } finally {
-    updating.delete(serverId);
-    events.emit('state', serverId);
+    inst.setUpdatePhase(null);
   }
 }
 

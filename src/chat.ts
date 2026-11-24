@@ -15,6 +15,12 @@ export interface ChatMessage {
   text: string;
   /** For panel messages: where it came from ("Panel", "Discord", an API key's name...). */
   via?: string;
+  /** A private panel message: only this player saw it in game. */
+  to?: string;
+  /** For panel messages: the sender's id where they wrote it (e.g. their Discord user id), as the poster said. */
+  userId?: string;
+  /** For panel messages sent with an API key: that key's id (unforgeable: set by Server Forge, not the poster). */
+  byKey?: string;
   /** Sent by a muted player: held back in the game (only the panel sees it). */
   muted?: boolean;
 }

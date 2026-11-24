@@ -95,7 +95,7 @@ details.nexus form { margin-top: 8px; }
 /* Colour wheel (bottom-left), like Tavern Host */
 .brand img { filter: hue-rotate(calc((var(--hue) - 214) * 1deg)); }
 .theme-corner { position: relative; z-index: 20; display: flex; align-items: center; gap: 8px; }
-/* Basic / Fancy UI switch, beside the colour wheel */
+/* Classic / Neon UI switch, beside the colour wheel */
 .appearance-button { display: inline-flex; align-items: center; gap: 5px; flex: none; min-height: 28px; padding: 4px 9px; font-size: 11px; }
 .appearance-button svg { flex: none; }
 .appearance-button[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--panel)); }
