@@ -1180,26 +1180,32 @@ route('POST', '/api/servers/:id/chat', async (ctx) => {
 
 // A private message to one player (e.g. AIDA's server helper answering a question). Only that player sees it in game;
 // it's still saved in the chat history and announced like other panel messages, so Watcher mirrors it to Discord.
-// Body: {"to": "<player>", "message": "...", "prefix"?: "§b[AIDA]§r ", "source"?: "AIDA", "discord"?: true}.
+// Body: {"to": "<player>", "message": "...", "prefix"?: "§b[AIDA]§r ", "source"?: "AIDA", "discord"?: true, "everyone"?: true}.
 // discord: the person isn't in game (they asked from Discord): only saved and announced, so it reaches Discord alone.
+// everyone: not private after all: shown to the whole game with who it is for.
+// private: in game only: not saved in the chat history or announced, so Watcher never copies it to Discord (one-time
+// codes, staff command results). Ignored with discord (that message only exists in the channel) and with everyone.
 route('POST', '/api/servers/:id/chat/whisper', async (ctx) => {
   const p = needServer(ctx, 'console.command', ctx.params[0]);
   const { inst, chat } = chatOf(ctx.params[0]);
   if (!chat.whisperCommand) throw new HttpError(404, `${inst.module.name} servers can't message one player yet.`);
   if (!inst.isRunning) throw new HttpError(409, 'The server is not running.');
   const body = await readBody(ctx.req);
-  const discordOnly = body.discord === true;
+  const everyone = body.everyone === true;
+  const discordOnly = body.discord === true && !everyone;
+  const gameOnly = body.private === true && !everyone && !discordOnly;
   const to = String(body.to ?? '').replace(/[\r\n]+/g, ' ').trim().slice(0, 32);
   const text = String(body.message ?? '').replace(/[\r\n]+/g, ' ').trim().slice(0, 500);
   if (!text) throw new HttpError(400, 'Type a message first.');
   if (!to) throw new HttpError(400, 'Say who it is for.');
   const prefix = String(body.prefix ?? '').replace(/[\r\n]+/g, ' ').slice(0, 40);
-  const command = discordOnly ? null : chat.whisperCommand(to, prefix + text);
+  // (to can be a Discord name here, so it is cleaned of colour codes)
+  const command = discordOnly ? null : everyone ? chat.sayCommand(`${prefix}§7@${to.replace(/§./g, '')}§r ${text}`) : chat.whisperCommand(to, prefix + text);
   if (!discordOnly && !command) throw new HttpError(400, 'That is not a player name.');
   const via = String(body.source ?? (p.kind === 'apikey' ? p.name : 'Panel')).trim().slice(0, 24) || 'Panel';
   if (command) await inst.sendCommand(command);
-  recordChat(inst.id, { t: Date.now(), from: 'panel', name: `${via} → ${to}`.slice(0, 40), text, via, to });
-  audit(p, `messaged ${to} privately on "${inst.record.name}"`);
+  if (!gameOnly) recordChat(inst.id, { t: Date.now(), from: 'panel', name: `${via} → ${to}`.slice(0, 40), text, via, to });
+  audit(p, `messaged ${to}${everyone ? '' : ' privately'} on "${inst.record.name}"`);
   return {};
 });
 

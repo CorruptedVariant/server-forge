@@ -169,7 +169,7 @@ export async function setChatRelay(installDir: string, level: string, on: boolea
 
 /** A panel message as a console command: tellraw to everyone (the text is JSON-escaped, so it can't break out). */
 export function chatSayCommand(text: string) {
-  const clean = String(text).replace(/[\r\n]+/g, ' ').slice(0, 400);
+  const clean = String(text).replace(/[\r\n]+/g, ' ').slice(0, 600);
   return `tellraw @a ${JSON.stringify({ rawtext: [{ text: clean }] })}`;
 }
 

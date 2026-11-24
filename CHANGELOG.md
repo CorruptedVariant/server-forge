@@ -1,5 +1,13 @@
 # Changelog
 
+## Server Forge 0.14.1
+
+Player helper replies can be shown to everyone.
+
+- **Player helper: who sees replies.** Show replies in game only to the player who asked (as before), or to everyone in the game and on Discord, including answers to questions asked on Discord. Confirmation codes, staff command results and answers that used staff-only documents are never shown to everyone: in the game only the person who asked sees them, and if they asked on Discord they're posted in the Discord channel.
+- **Fix:** those private replies to someone in the game were also saved in the chat history, so a Discord chat relay could copy them to Discord. They now stay in the game (and in the helper's own log).
+- **Fix:** curly quotes, long dashes and "…" in helper replies could show up garbled in Minecraft chat.
+
 ## Server Forge 0.14.0
 
 AI helpers, master panel backups, and better Bedrock add-on management.

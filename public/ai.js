@@ -413,6 +413,7 @@ function renderHelper(all = false) {
     $('hlpRude').value = c.whenRude ?? 'polite';
     $('hlpRoastSwear').checked = !!c.roastSwearing;
     $('hlpListAddons').checked = c.listAddons !== false;
+    $('hlpAudience').value = c.audience ?? 'asker';
     keep('hlpPersonality', c.personality);
     keep('hlpRudeNotes', c.rudeNotes);
     keep('hlpReplyRules', c.replyRules);
@@ -713,6 +714,7 @@ function wire() {
         replyRules: $('hlpReplyRules').value,
         maxReplyChars: Number($('hlpMaxChars').value),
         listAddons: $('hlpListAddons').checked,
+        audience: $('hlpAudience').value,
       },
       'Personality saved.',
     ),

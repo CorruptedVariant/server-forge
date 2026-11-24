@@ -770,7 +770,7 @@
         <div id="aiHelperPane" hidden>
           <section class="card">
             <h3>Player helper</h3>
-            <p class="muted">Players put the trigger word in chat (in capitals) to ask the AI about the server. Answers are sent privately to whoever asked. The AI gets no tools: it can only reply, read the documents you give it, or ask for a console command, and Server Forge checks every command against fixed rules. Staff are checked live (Xbox ID, staff tag, operator) before they get more. Minecraft Bedrock servers on this system, with the chat relay on.</p>
+            <p class="muted">Players put the trigger word in chat (in capitals) to ask the AI about the server. Answers go to whoever asked, or to everyone if you choose that under "Who sees replies". The AI gets no tools: it can only reply, read the documents you give it, or ask for a console command, and Server Forge checks every command against fixed rules. Staff are checked live (Xbox ID, staff tag, operator) before they get more. Minecraft Bedrock servers on this system, with the chat relay on.</p>
             <div class="with-button"><label class="ai-field">Server <select id="hlpServer"></select></label></div>
           </section>
           <div id="hlpBody" hidden>
@@ -830,11 +830,13 @@
               <div class="ai-grid">
                 <label>When a player is rude to it <select id="hlpRude"></select></label>
                 <label>Longest reply (characters) <input type="number" id="hlpMaxChars" min="80" max="450"></label>
+                <label>Who sees replies <select id="hlpAudience"><option value="asker">Only the player who asked</option><option value="everyone">Everyone in the game, and Discord</option></select></label>
               </div>
               <div class="hlp-toggles">
                 <label class="toggle" id="hlpRoastSwearRow"><input type="checkbox" id="hlpRoastSwear"> Swearing allowed in comebacks</label>
                 <label class="toggle"><input type="checkbox" id="hlpListAddons"> Tell it which add-ons are switched on (names and descriptions)</label>
               </div>
+              <p class="muted small-text">With "Everyone", answers to questions asked on Discord also show in the game. With "Only the player who asked", nobody else in the game sees the reply, but a Discord chat relay still shows it. Confirmation codes, staff command results and answers that used staff-only documents are never shown to everyone: in the game only the person who asked sees them, and they aren't copied to Discord. If that person asked on Discord, they're posted in the Discord channel, where others in it can read them.</p>
               <label class="small-text" for="hlpRudeNotes">Your own notes for rude players (optional)</label>
               <textarea id="hlpRudeNotes" rows="2" maxlength="600" placeholder="E.g. Regulars joke around a lot; newcomers get the polite version. Steve is always fair game."></textarea>
               <label class="small-text" for="hlpReplyRules">Reply rules (optional)</label>
